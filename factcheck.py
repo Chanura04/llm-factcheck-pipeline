@@ -5,7 +5,15 @@ from typing import List
 import numpy as np
 import spacy
 import gc
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import PorterStemmer
 
+
+try:
+    stopwords.words('english')
+except LookupError:
+    nltk.download("stopwords", quiet=True)
 
 class FactExample(object):
     """
@@ -82,8 +90,71 @@ class AlwaysEntailedFactChecker(FactChecker):
 
 
 class WordRecallThresholdFactChecker(FactChecker):
+    THRESHOLD = 0.6
+
+    def __init__(self):
+        self.stop_words = set(stopwords.words("english"))
+        self.stemmer = PorterStemmer()
+
+    def _preprocess(self, text: str) -> set:
+        """Convert raw test into clean set of tokens for overlap comparision"""
+
+        #  lowercase + remove punctuation
+        text = text.lower()
+
+        for punc in [",","!",".","?",":",";","()","[]","{}","'","\"","@","#","$","%","^","&","*","~"]:
+            text = text.replace(punc, "")
+
+        # Tokenize
+        tokens = text.split()
+
+        # Remove stop words
+        tokens = [token for token in tokens if token not in self.stop_words]
+
+        # Remove prefixes , suffixes and Convert words to their root form (Stemming)
+        tokens = [self.stemmer.stem(token) for token in tokens]
+
+        return set(tokens)
+
+    def _recall(self, fact_tokens: set, passage_tokens: set) -> float:
+        """
+        Calculates the recall score, which measures the proportion of tokens from the fact that are present in the passage.
+        This helps determine how much of the original fact is covered by the supporting text.
+        Recall = |fact_tokens ∩ passage_tokens| / |fact_tokens|
+        """
+        if len(fact_tokens) == 0:
+            return 0.0
+        intersection = fact_tokens & passage_tokens
+        return len(intersection) / len(fact_tokens)
+
+    def _jaccard(self, fact_tokens: set, passage_tokens: set) -> float:
+        """
+        Calculates the Jaccard similarity score, which measures the similarity between the fact tokens and passage tokens.
+        This helps determine how much of the original fact is covered by the supporting text.
+        Jaccard = |fact_tokens ∩ passage_tokens| / |fact_tokens ∪ passage_tokens|
+        """
+        if len(fact_tokens | passage_tokens) == 0:
+            return 0.0
+        return len(fact_tokens & passage_tokens) / len(fact_tokens | passage_tokens)
+
+    def _f1(self, fact_tokens: set, passage_tokens: set) -> float:
+        intersection = fact_tokens & passage_tokens
+        if len(intersection) == 0:
+            return 0.0
+        precision = len(intersection) / len(passage_tokens)
+        recall = len(intersection) / len(fact_tokens)
+        return 2 * precision * recall / (precision + recall)
+
     def predict(self, fact: str, passages: List[dict]) -> str:
-        raise Exception("Implement me")
+        fact_tokens = self._preprocess(fact)
+
+        max_score = 0.0
+        for passage in passages:
+            passage_tokens = self._preprocess(passage["text"])
+            score = self._recall(fact_tokens, passage_tokens)
+            max_score = max(max_score, score)
+
+        return "S" if max_score > self.THRESHOLD else "NS"
 
 
 class EntailmentFactChecker(FactChecker):
