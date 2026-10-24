@@ -787,8 +787,215 @@ class DatasetEDA(object):
         print(f"  [OK] All 9 individual high-res figures saved to '{output_dir}/'")
         print("=" * 60 + "\n")
 
-    def run(self, generate_plots: bool = True):
-        """Executes all EDA routines sequentially, including plot generation."""
+    def compare_similarity_metrics(self, output_dir: str = "eda_plots"):
+        """
+        Benchmarks different similarity & preprocessing methods (Word Recall,
+        TF-IDF Cosine, ROUGE-1, ROUGE-2, ROUGE-L) on the dataset and prints
+        a comparative evaluation table with optimal decision thresholds.
+        """
+        import os
+        import numpy as np
+        from collections import Counter
+        from nltk.corpus import stopwords
+        from nltk.stem import PorterStemmer
+
+        try:
+            from rouge_score import rouge_scorer
+        except ImportError:
+            rouge_scorer = None
+
+        try:
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            from sklearn.metrics.pairwise import cosine_similarity
+        except ImportError:
+            TfidfVectorizer = None
+
+        stop_words = set(stopwords.words("english"))
+        stemmer = PorterStemmer()
+
+        def clean_tokens(text):
+            text = text.lower()
+            for punc in [",", "!", ".", "?", ":", ";", "()", "[]", "{}", "'", '"', "@", "#", "$", "%", "^", "&", "*", "~"]:
+                text = text.replace(punc, " ")
+            return set(stemmer.stem(t) for t in text.split() if t not in stop_words)
+
+        examples = []
+        for f in self.raw_facts:
+            text = f.get("text", "")
+            if text in self.fact_to_passages:
+                label_val = 1 if f.get("label") == "S" else 0
+                examples.append((text, self.fact_to_passages[text], label_val))
+
+        labels = [ex[2] for ex in examples]
+        total_ex = len(labels)
+
+        # 1. Word Recall & Jaccard
+        recall_scores, jaccard_scores = [], []
+        for fact, ps, _ in examples:
+            ft = clean_tokens(fact)
+            r_max, j_max = 0.0, 0.0
+            for p in ps:
+                pt = clean_tokens(p.get("text", ""))
+                inter = len(ft & pt)
+                r = inter / len(ft) if ft else 0.0
+                j = inter / len(ft | pt) if (ft | pt) else 0.0
+                r_max = max(r_max, r)
+                j_max = max(j_max, j)
+            recall_scores.append(r_max)
+            jaccard_scores.append(j_max)
+
+        metric_dict = {
+            "Word Recall (Stem+Stopwords)": recall_scores,
+            "Word Jaccard": jaccard_scores,
+        }
+
+        # 2. ROUGE Metrics
+        if rouge_scorer is not None:
+            scorer = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=True)
+            r1_r, r2_r, rl_r = [], [], []
+            r1_f, r2_f, rl_f = [], [], []
+            for fact, ps, _ in examples:
+                b_r1_r, b_r2_r, b_rl_r = 0.0, 0.0, 0.0
+                b_r1_f, b_r2_f, b_rl_f = 0.0, 0.0, 0.0
+                for p in ps:
+                    p_text = p.get("text", "")
+                    s = scorer.score(target=fact, prediction=p_text)
+                    b_r1_r = max(b_r1_r, s["rouge1"].recall)
+                    b_r2_r = max(b_r2_r, s["rouge2"].recall)
+                    b_rl_r = max(b_rl_r, s["rougeL"].recall)
+                    b_r1_f = max(b_r1_f, s["rouge1"].fmeasure)
+                    b_r2_f = max(b_r2_f, s["rouge2"].fmeasure)
+                    b_rl_f = max(b_rl_f, s["rougeL"].fmeasure)
+                r1_r.append(b_r1_r)
+                r2_r.append(b_r2_r)
+                rl_r.append(b_rl_r)
+                r1_f.append(b_r1_f)
+                r2_f.append(b_r2_f)
+                rl_f.append(b_rl_f)
+
+            metric_dict["ROUGE-1 Recall"] = r1_r
+            metric_dict["ROUGE-1 F1"] = r1_f
+            metric_dict["ROUGE-2 Recall"] = r2_r
+            metric_dict["ROUGE-2 F1"] = r2_f
+            metric_dict["ROUGE-L Recall"] = rl_r
+            metric_dict["ROUGE-L F1"] = rl_f
+
+        # 3. TF-IDF Cosine & Weighted Recall
+        if TfidfVectorizer is not None:
+            corpus = list(set([p["text"] for ex in examples for p in ex[1]] + [ex[0] for ex in examples]))
+            tfidf = TfidfVectorizer(stop_words="english", lowercase=True, norm="l2")
+            tfidf.fit(corpus)
+            tfidf_sub = TfidfVectorizer(stop_words="english", lowercase=True, sublinear_tf=True, norm="l2")
+            tfidf_sub.fit(corpus)
+
+            idf_map = dict(zip(tfidf.get_feature_names_out(), tfidf.idf_))
+
+            cos_scores = []
+            cos_sub_scores = []
+            weighted_recalls = []
+
+            for fact, ps, _ in examples:
+                f_vec = tfidf.transform([fact])
+                p_vecs = tfidf.transform([p["text"] for p in ps])
+                cos_scores.append(float(np.max(cosine_similarity(f_vec, p_vecs)[0])) if len(ps) > 0 else 0.0)
+
+                f_sub_vec = tfidf_sub.transform([fact])
+                p_sub_vecs = tfidf_sub.transform([p["text"] for p in ps])
+                cos_sub_scores.append(float(np.max(cosine_similarity(f_sub_vec, p_sub_vecs)[0])) if len(ps) > 0 else 0.0)
+
+                # TF-IDF Weighted Recall
+                f_tokens = [w for w in tfidf.build_tokenizer()(fact.lower()) if w in idf_map]
+                f_idf_sum = sum(idf_map[w] for w in f_tokens)
+                best_w_r = 0.0
+                for p in ps:
+                    p_toks = set(tfidf.build_tokenizer()(p["text"].lower()))
+                    matched_idf = sum(idf_map[w] for w in f_tokens if w in p_toks)
+                    w_r = matched_idf / f_idf_sum if f_idf_sum > 0 else 0.0
+                    best_w_r = max(best_w_r, w_r)
+                weighted_recalls.append(best_w_r)
+
+            metric_dict["TF-IDF Cosine Similarity"] = cos_scores
+            metric_dict["TF-IDF Sublinear Cosine"] = cos_sub_scores
+            metric_dict["TF-IDF Weighted Recall"] = weighted_recalls
+
+        # Sweep thresholds
+        results = []
+        for name, scores in metric_dict.items():
+            best_acc, best_thresh = 0.0, 0.0
+            best_f1_s, best_f1_ns = 0.0, 0.0
+            for t in np.linspace(0.01, 0.99, 100):
+                preds = [1 if s >= t else 0 for s in scores]
+                tp = sum(p == 1 and l == 1 for p, l in zip(preds, labels))
+                fp = sum(p == 1 and l == 0 for p, l in zip(preds, labels))
+                tn = sum(p == 0 and l == 0 for p, l in zip(preds, labels))
+                fn = sum(p == 0 and l == 1 for p, l in zip(preds, labels))
+                acc = (tp + tn) / total_ex
+                if acc > best_acc:
+                    best_acc = acc
+                    best_thresh = t
+                    prec_s = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+                    rec_s = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+                    best_f1_s = 2 * prec_s * rec_s / (prec_s + rec_s) if (prec_s + rec_s) > 0 else 0.0
+                    prec_ns = tn / (tn + fn) if (tn + fn) > 0 else 0.0
+                    rec_ns = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+                    best_f1_ns = 2 * prec_ns * rec_ns / (prec_ns + rec_ns) if (prec_ns + rec_ns) > 0 else 0.0
+
+            macro_f1 = (best_f1_s + best_f1_ns) / 2
+            results.append({
+                "name": name,
+                "thresh": best_thresh,
+                "acc": best_acc,
+                "f1_s": best_f1_s,
+                "f1_ns": best_f1_ns,
+                "macro_f1": macro_f1
+            })
+
+        # Sort by Accuracy descending
+        results.sort(key=lambda x: x["acc"], reverse=True)
+
+        print("\n" + "=" * 80)
+        print("SIMILARITY & PREPROCESSING BENCHMARK (DEV SET EVALUATION)")
+        print("=" * 80)
+        h_m, h_t, h_a, h_s, h_ns, h_mf = "Metric", "Thresh", "Acc (%)", "S-F1", "NS-F1", "Macro-F1"
+        print(f"{h_m:<30} | {h_t:<7} | {h_a:<8} | {h_s:<7} | {h_ns:<7} | {h_mf:<8}")
+        print("-" * 80)
+        for r in results:
+            m_name, th, ac = r["name"], r["thresh"], r["acc"] * 100
+            fs, fns, mf = r["f1_s"], r["f1_ns"], r["macro_f1"]
+            print(f"{m_name:<30} | {th:<7.2f} | {ac:<8.2f} | {fs:<7.4f} | {fns:<7.4f} | {mf:<8.4f}")
+        print("=" * 80)
+        print(f"-> Winner: '{results[0]['name']}' with {results[0]['acc']*100:.2f}% Accuracy at threshold {results[0]['thresh']:.2f}.\n")
+
+        # Save plot if matplotlib available
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            os.makedirs(output_dir, exist_ok=True)
+            plot_names = [r["name"] for r in results]
+            plot_accs = [r["acc"] * 100 for r in results]
+            colors = ["#2ecc71" if a >= 75 else "#3498db" if a >= 70 else "#e67e22" if a >= 65 else "#e74c3c" for a in plot_accs]
+
+            plt.figure(figsize=(12, 5.5))
+            bars = plt.bar(plot_names, plot_accs, color=colors, edgecolor="black", alpha=0.85)
+            plt.axhline(results[0]["acc"] * 100, color="gray", linestyle="--", label=f"Top: {results[0]['name']} ({results[0]['acc']*100:.2f}%)")
+            plt.bar_label(bars, fmt="%.1f%%", padding=3, fontweight="bold")
+            plt.title("Comparison of Similarity & Preprocessing Metrics on Fact-Checking", fontsize=14, fontweight="bold")
+            plt.ylabel("Dev Set Accuracy (%)", fontsize=11)
+            plt.ylim(50, 90)
+            plt.xticks(rotation=25, ha="right", fontsize=9)
+            plt.legend(loc="upper right")
+            plt.tight_layout()
+            comparison_path = os.path.join(output_dir, "similarity_metrics_comparison.png")
+            plt.savefig(comparison_path, dpi=200)
+            plt.close()
+            print(f"  [OK] Metric comparison plot saved to: {comparison_path}")
+        except Exception as e:
+            pass
+
+    def run(self, generate_plots: bool = True, compare_metrics: bool = True):
+        """Executes all EDA routines sequentially, including benchmark and plot generation."""
         print("\n>>> Running Full Dataset EDA (Before Preprocessing) <<<")
         self.load_data()
         self.print_topic_overview()
@@ -798,6 +1005,8 @@ class DatasetEDA(object):
         self.print_ambiguity_zone_analysis()
         self.print_entity_rarity_hallucination_analysis()
         self.print_best_passage_rank_analysis()
+        if compare_metrics:
+            self.compare_similarity_metrics()
         if generate_plots:
             self.generate_plots()
 
