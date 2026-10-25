@@ -5,14 +5,21 @@ import numpy as np
 import spacy
 import gc
 import nltk
-from nltk.corpus import stopwords
-from nltk.stem import PorterStemmer
+from nltk.corpus import stopwords, wordnet
+from nltk.stem import PorterStemmer, WordNetLemmatizer
 
 
 try:
     stopwords.words('english')
 except LookupError:
     nltk.download("stopwords", quiet=True)
+
+try:
+    wordnet.synsets("test")
+except LookupError:
+    nltk.download("wordnet", quiet=True)
+    nltk.download("omw-1.4", quiet=True)
+
 
 class FactExample(object):
     """
@@ -91,9 +98,11 @@ class AlwaysEntailedFactChecker(FactChecker):
 class WordRecallThresholdFactChecker(FactChecker):
     THRESHOLD = 0.6
 
-    def __init__(self):
+    def __init__(self, use_lemmatization: bool = False):
         self.stop_words = set(stopwords.words("english"))
         self.stemmer = PorterStemmer()
+        self.lemmatizer = WordNetLemmatizer()
+        self.use_lemmatization = use_lemmatization
 
     def _preprocess(self, text: str) -> set:
         """Convert raw test into clean set of tokens for overlap comparision"""
@@ -112,6 +121,25 @@ class WordRecallThresholdFactChecker(FactChecker):
 
         # Remove prefixes , suffixes and Convert words to their root form (Stemming)
         tokens = [self.stemmer.stem(token) for token in tokens]
+
+        return set(tokens)
+
+    def _preprocess_with_lemm(self, text: str) -> set:
+        """Identical to _preprocess() — only the stemming line is replaced with lemmatization."""
+        #  lowercase + remove punctuation
+        text = text.lower()
+
+        for punc in [",","!",".","?",":",";","()","[]","{}","'","\"","@","#","$","%","^","&","*","~"]:
+            text = text.replace(punc, "")
+
+        # Tokenize
+        tokens = text.split()
+
+        # Remove stop words
+        tokens = [token for token in tokens if token not in self.stop_words]
+
+        # Lemmatization — the ONLY line that differs from _preprocess()
+        tokens = [self.lemmatizer.lemmatize(token) for token in tokens]
 
         return set(tokens)
 
@@ -195,6 +223,7 @@ class DependencyRecallThresholdFactChecker(FactChecker):
             relations.add(relation)
         return relations
 
+
 class DatasetEDA(object):
     """
     Encapsulates Exploratory Data Analysis (EDA) on the raw dataset before any
@@ -275,7 +304,7 @@ class DatasetEDA(object):
 
         fact_words = [len(f["text"].split()) for f in self.raw_facts]
         fact_chars = [len(f["text"]) for f in self.raw_facts]
-        
+
         passages_counts = []
         passage_words = []
         for f in self.raw_facts:
