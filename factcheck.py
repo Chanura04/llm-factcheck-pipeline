@@ -35,12 +35,15 @@ class FactExample(object):
 
 
 class EntailmentModel(object):
+
     def __init__(self, model, tokenizer, cuda=False):
         self.model = model
         self.tokenizer = tokenizer
         self.cuda = cuda
 
     def check_entailment(self, premise: str, hypothesis: str):
+        import torch.nn.functional as F
+
         with torch.no_grad():
             # Tokenize the premise and hypothesis
             inputs = self.tokenizer(premise, hypothesis, return_tensors='pt', truncation=True, padding=True)
@@ -53,6 +56,10 @@ class EntailmentModel(object):
         # Note that the labels are ["entailment", "neutral", "contradiction"]. There are a number of ways to map
         # these logits or probabilities to classification decisions; you'll have to decide how you want to do this.
 
+        # Label order for DeBERTa-mnli-fever-anli: [entailment, neutral, contradiction]
+        probs = F.softmax(logits, dim=-1)
+        entailment_prob = probs[0][0].item()
+
         raise Exception("Not implemented")
 
         # To prevent out-of-memory (OOM) issues during autograding, we explicitly delete
@@ -60,7 +67,7 @@ class EntailmentModel(object):
         del inputs, outputs, logits
         gc.collect()
 
-        # return something
+        return entailment_prob
 
 
 class FactChecker(object):
@@ -162,7 +169,14 @@ class EntailmentFactChecker(FactChecker):
         self.ent_model = ent_model
 
     def predict(self, fact: str, passages: List[dict]) -> str:
-        raise Exception("Implement me")
+        THRESHOLD = 0.5  
+        
+        max_entailment = 0.0
+        for passage in passages:
+            score = self.ent_model.check_entailment(passage["text"], fact)
+            max_entailment = max(max_entailment, score)
+        
+        return "S" if max_entailment >= THRESHOLD else "NS"
 
 
 # OPTIONAL
