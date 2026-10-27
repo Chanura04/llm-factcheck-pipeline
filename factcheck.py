@@ -8,7 +8,6 @@ import nltk
 from nltk.corpus import stopwords, wordnet
 from nltk.stem import PorterStemmer, WordNetLemmatizer
 
-
 try:
     stopwords.words('english')
 except LookupError:
@@ -31,6 +30,7 @@ class FactExample(object):
     label for prediction, so your model should just predict S or NS, but we leave it here so you can look at the
     raw data.
     """
+
     def __init__(self, fact: str, passages: List[dict], label: str):
         self.fact = fact
         self.passages = passages
@@ -106,11 +106,10 @@ class WordRecallThresholdFactChecker(FactChecker):
 
     def _preprocess(self, text: str) -> set:
         """Convert raw test into clean set of tokens for overlap comparision"""
-
         #  lowercase + remove punctuation
         text = text.lower()
 
-        for punc in [",","!",".","?",":",";","()","[]","{}","'","\"","@","#","$","%","^","&","*","~"]:
+        for punc in [",", "!", ".", "?", ":", ";", "()", "[]", "{}", "'", "\"", "@", "#", "$", "%", "^", "&", "*", "~"]:
             text = text.replace(punc, "")
 
         # Tokenize
@@ -126,16 +125,12 @@ class WordRecallThresholdFactChecker(FactChecker):
 
     def _preprocess_with_lemm(self, text: str) -> set:
         """Identical to _preprocess() — only the stemming line is replaced with lemmatization."""
-        #  lowercase + remove punctuation
         text = text.lower()
 
-        for punc in [",","!",".","?",":",";","()","[]","{}","'","\"","@","#","$","%","^","&","*","~"]:
+        for punc in [",", "!", ".", "?", ":", ";", "()", "[]", "{}", "'", "\"", "@", "#", "$", "%", "^", "&", "*", "~"]:
             text = text.replace(punc, "")
 
-        # Tokenize
         tokens = text.split()
-
-        # Remove stop words
         tokens = [token for token in tokens if token not in self.stop_words]
 
         # Lemmatization — the ONLY line that differs from _preprocess()
@@ -173,11 +168,16 @@ class WordRecallThresholdFactChecker(FactChecker):
         return 2 * precision * recall / (precision + recall)
 
     def predict(self, fact: str, passages: List[dict]) -> str:
-        fact_tokens = self._preprocess(fact)
+        # Dispatch to the correct preprocessor based on the flag
+        preprocess_fn = (
+            self._preprocess_with_lemm if self.use_lemmatization else self._preprocess
+        )
+
+        fact_tokens = preprocess_fn(fact)
 
         max_score = 0.0
         for passage in passages:
-            passage_tokens = self._preprocess(passage["text"])
+            passage_tokens = preprocess_fn(passage["text"])
             score = self._recall(fact_tokens, passage_tokens)
             max_score = max(max_score, score)
 
@@ -229,6 +229,7 @@ class DatasetEDA(object):
     Encapsulates Exploratory Data Analysis (EDA) on the raw dataset before any
     preprocessing (tokenization, lowercasing, stopword removal, stemming) is applied.
     """
+
     def __init__(self, dev_path: str = "data/dev_labeled_ChatGPT.jsonl",
                  passages_path: str = "data/passages_bm25_ChatGPT_humfacts.jsonl"):
         self.dev_path = dev_path
@@ -316,10 +317,14 @@ class DatasetEDA(object):
         print("\n" + "=" * 60)
         print("3. RAW SEQUENCE LENGTH METRICS")
         print("=" * 60)
-        print(f"Atomic Fact Words      : Min={min(fact_words)}, Max={max(fact_words)}, Mean={statistics.mean(fact_words):.2f}, Median={statistics.median(fact_words)}")
-        print(f"Atomic Fact Characters : Min={min(fact_chars)}, Max={max(fact_chars)}, Mean={statistics.mean(fact_chars):.2f}, Median={statistics.median(fact_chars)}")
-        print(f"Passages per Fact      : Min={min(passages_counts)}, Max={max(passages_counts)}, Mean={statistics.mean(passages_counts):.2f}")
-        print(f"Words per Passage      : Min={min(passage_words)}, Max={max(passage_words)}, Mean={statistics.mean(passage_words):.2f}")
+        print(
+            f"Atomic Fact Words      : Min={min(fact_words)}, Max={max(fact_words)}, Mean={statistics.mean(fact_words):.2f}, Median={statistics.median(fact_words)}")
+        print(
+            f"Atomic Fact Characters : Min={min(fact_chars)}, Max={max(fact_chars)}, Mean={statistics.mean(fact_chars):.2f}, Median={statistics.median(fact_chars)}")
+        print(
+            f"Passages per Fact      : Min={min(passages_counts)}, Max={max(passages_counts)}, Mean={statistics.mean(passages_counts):.2f}")
+        print(
+            f"Words per Passage      : Min={min(passage_words)}, Max={max(passage_words)}, Mean={statistics.mean(passage_words):.2f}")
 
     def print_vocabulary_analysis(self, top_n: int = 10):
         """Examines the raw lexical space to justify subsequent preprocessing."""
@@ -359,7 +364,8 @@ class DatasetEDA(object):
 
         label_counts = Counter(f["label"] for f in self.raw_facts)
         fact_lengths = [len(f["text"].split()) for f in self.raw_facts]
-        passage_lengths = [len(p["text"].split()) for f in self.raw_facts for p in self.fact_to_passages.get(f["text"], [])]
+        passage_lengths = [len(p["text"].split()) for f in self.raw_facts for p in
+                           self.fact_to_passages.get(f["text"], [])]
 
         cat_counts = Counter()
         for b in self.raw_biographies:
@@ -376,7 +382,8 @@ class DatasetEDA(object):
         for f in self.raw_facts:
             f_tokens = set(f["text"].split())
             ps = self.fact_to_passages.get(f["text"], [])
-            best_r = max((len(f_tokens & set(p["text"].split())) / len(f_tokens) for p in ps), default=0.0) if f_tokens else 0.0
+            best_r = max((len(f_tokens & set(p["text"].split())) / len(f_tokens) for p in ps),
+                         default=0.0) if f_tokens else 0.0
             if f["label"] == "S":
                 recalls_s.append(best_r)
             else:
@@ -386,7 +393,8 @@ class DatasetEDA(object):
         # Master Figure: 2x3 Grid Dashboard
         # -------------------------------------------------------------
         fig, axes = plt.subplots(2, 3, figsize=(18, 11))
-        fig.suptitle("Exploratory Data Analysis (EDA) - Raw Dataset Before Preprocessing", fontsize=16, fontweight="bold")
+        fig.suptitle("Exploratory Data Analysis (EDA) - Raw Dataset Before Preprocessing", fontsize=16,
+                     fontweight="bold")
 
         # 1. Target Label Distribution
         ax1 = axes[0, 0]
@@ -409,8 +417,10 @@ class DatasetEDA(object):
 
         # 3. Fact Word Length Distribution
         ax3 = axes[0, 2]
-        ax3.hist(fact_lengths, bins=range(min(fact_lengths), max(fact_lengths) + 2), color="#9b59b6", edgecolor="black", alpha=0.8, align="left")
-        ax3.axvline(statistics.mean(fact_lengths), color="red", linestyle="--", linewidth=2, label=f"Mean: {statistics.mean(fact_lengths):.2f}")
+        ax3.hist(fact_lengths, bins=range(min(fact_lengths), max(fact_lengths) + 2), color="#9b59b6", edgecolor="black",
+                 alpha=0.8, align="left")
+        ax3.axvline(statistics.mean(fact_lengths), color="red", linestyle="--", linewidth=2,
+                    label=f"Mean: {statistics.mean(fact_lengths):.2f}")
         ax3.set_title("Atomic Fact Word Length (Words/Fact)", fontsize=12, fontweight="bold")
         ax3.set_xlabel("Word Count")
         ax3.set_ylabel("Frequency")
@@ -419,7 +429,8 @@ class DatasetEDA(object):
         # 4. Evidence Passage Length
         ax4 = axes[1, 0]
         ax4.hist(passage_lengths, bins=25, color="#1abc9c", edgecolor="black", alpha=0.8)
-        ax4.axvline(statistics.mean(passage_lengths), color="red", linestyle="--", linewidth=2, label=f"Mean: {statistics.mean(passage_lengths):.1f}")
+        ax4.axvline(statistics.mean(passage_lengths), color="red", linestyle="--", linewidth=2,
+                    label=f"Mean: {statistics.mean(passage_lengths):.1f}")
         ax4.set_title("Evidence Passage Length (Words/Passage)", fontsize=12, fontweight="bold")
         ax4.set_xlabel("Word Count")
         ax4.set_ylabel("Frequency")
@@ -435,7 +446,8 @@ class DatasetEDA(object):
 
         # 6. Raw Surface Token Overlap
         ax6 = axes[1, 2]
-        bp = ax6.boxplot([recalls_s, recalls_ns], tick_labels=["Supported (S)", "Not Supported (NS/IR)"], patch_artist=True)
+        bp = ax6.boxplot([recalls_s, recalls_ns], tick_labels=["Supported (S)", "Not Supported (NS/IR)"],
+                         patch_artist=True)
         bp["boxes"][0].set_facecolor("#2ecc71")
         bp["boxes"][1].set_facecolor("#e74c3c")
         ax6.set_title("Raw Token Recall (Before Preprocessing)", fontsize=12, fontweight="bold")
@@ -473,8 +485,10 @@ class DatasetEDA(object):
 
         # Individual 3: Fact Lengths
         plt.figure(figsize=(7, 4.5))
-        plt.hist(fact_lengths, bins=range(min(fact_lengths), max(fact_lengths) + 2), color="#9b59b6", edgecolor="black", alpha=0.8, align="left")
-        plt.axvline(statistics.mean(fact_lengths), color="red", linestyle="--", linewidth=2, label=f"Mean: {statistics.mean(fact_lengths):.2f}")
+        plt.hist(fact_lengths, bins=range(min(fact_lengths), max(fact_lengths) + 2), color="#9b59b6", edgecolor="black",
+                 alpha=0.8, align="left")
+        plt.axvline(statistics.mean(fact_lengths), color="red", linestyle="--", linewidth=2,
+                    label=f"Mean: {statistics.mean(fact_lengths):.2f}")
         plt.title("Atomic Fact Length Distribution (Words)", fontsize=13, fontweight="bold")
         plt.xlabel("Word Count")
         plt.ylabel("Frequency")
@@ -486,7 +500,8 @@ class DatasetEDA(object):
         # Individual 4: Passage Lengths
         plt.figure(figsize=(7, 4.5))
         plt.hist(passage_lengths, bins=25, color="#1abc9c", edgecolor="black", alpha=0.8)
-        plt.axvline(statistics.mean(passage_lengths), color="red", linestyle="--", linewidth=2, label=f"Mean: {statistics.mean(passage_lengths):.1f}")
+        plt.axvline(statistics.mean(passage_lengths), color="red", linestyle="--", linewidth=2,
+                    label=f"Mean: {statistics.mean(passage_lengths):.1f}")
         plt.title("Evidence Passage Length Distribution (Words)", fontsize=13, fontweight="bold")
         plt.xlabel("Word Count")
         plt.ylabel("Frequency")
@@ -507,7 +522,8 @@ class DatasetEDA(object):
 
         # Individual 6: Raw Overlap
         plt.figure(figsize=(6, 5))
-        bp = plt.boxplot([recalls_s, recalls_ns], tick_labels=["Supported (S)", "Not Supported (NS/IR)"], patch_artist=True)
+        bp = plt.boxplot([recalls_s, recalls_ns], tick_labels=["Supported (S)", "Not Supported (NS/IR)"],
+                         patch_artist=True)
         bp["boxes"][0].set_facecolor("#2ecc71")
         bp["boxes"][1].set_facecolor("#e74c3c")
         plt.title("Raw Lexical Recall by Label", fontsize=13, fontweight="bold")
@@ -547,7 +563,8 @@ class DatasetEDA(object):
 
         def clean_tokens(text):
             text = text.lower()
-            for punc in [",", "!", ".", "?", ":", ";", "()", "[]", "{}", "'", '"', "@", "#", "$", "%", "^", "&", "*", "~"]:
+            for punc in [",", "!", ".", "?", ":", ";", "()", "[]", "{}", "'", '"', "@", "#", "$", "%", "^", "&", "*",
+                         "~"]:
                 text = text.replace(punc, " ")
             return set(stemmer.stem(t) for t in text.split() if t not in stop_words)
 
@@ -633,7 +650,8 @@ class DatasetEDA(object):
 
                 f_sub_vec = tfidf_sub.transform([fact])
                 p_sub_vecs = tfidf_sub.transform([p["text"] for p in ps])
-                cos_sub_scores.append(float(np.max(cosine_similarity(f_sub_vec, p_sub_vecs)[0])) if len(ps) > 0 else 0.0)
+                cos_sub_scores.append(
+                    float(np.max(cosine_similarity(f_sub_vec, p_sub_vecs)[0])) if len(ps) > 0 else 0.0)
 
                 # TF-IDF Weighted Recall
                 f_tokens = [w for w in tfidf.build_tokenizer()(fact.lower()) if w in idf_map]
@@ -696,7 +714,8 @@ class DatasetEDA(object):
             fs, fns, mf = r["f1_s"], r["f1_ns"], r["macro_f1"]
             print(f"{m_name:<30} | {th:<7.2f} | {ac:<8.2f} | {fs:<7.4f} | {fns:<7.4f} | {mf:<8.4f}")
         print("=" * 80)
-        print(f"-> Winner: '{results[0]['name']}' with {results[0]['acc']*100:.2f}% Accuracy at threshold {results[0]['thresh']:.2f}.\n")
+        print(
+            f"-> Winner: '{results[0]['name']}' with {results[0]['acc'] * 100:.2f}% Accuracy at threshold {results[0]['thresh']:.2f}.\n")
 
         # Save plot if matplotlib available
         try:
@@ -707,13 +726,16 @@ class DatasetEDA(object):
             os.makedirs(output_dir, exist_ok=True)
             plot_names = [r["name"] for r in results]
             plot_accs = [r["acc"] * 100 for r in results]
-            colors = ["#2ecc71" if a >= 75 else "#3498db" if a >= 70 else "#e67e22" if a >= 65 else "#e74c3c" for a in plot_accs]
+            colors = ["#2ecc71" if a >= 75 else "#3498db" if a >= 70 else "#e67e22" if a >= 65 else "#e74c3c" for a in
+                      plot_accs]
 
             plt.figure(figsize=(12, 5.5))
             bars = plt.bar(plot_names, plot_accs, color=colors, edgecolor="black", alpha=0.85)
-            plt.axhline(results[0]["acc"] * 100, color="gray", linestyle="--", label=f"Top: {results[0]['name']} ({results[0]['acc']*100:.2f}%)")
+            plt.axhline(results[0]["acc"] * 100, color="gray", linestyle="--",
+                        label=f"Top: {results[0]['name']} ({results[0]['acc'] * 100:.2f}%)")
             plt.bar_label(bars, fmt="%.1f%%", padding=3, fontweight="bold")
-            plt.title("Comparison of Similarity & Preprocessing Metrics on Fact-Checking", fontsize=14, fontweight="bold")
+            plt.title("Comparison of Similarity & Preprocessing Metrics on Fact-Checking", fontsize=14,
+                      fontweight="bold")
             plt.ylabel("Dev Set Accuracy (%)", fontsize=11)
             plt.ylim(50, 90)
             plt.xticks(rotation=25, ha="right", fontsize=9)
