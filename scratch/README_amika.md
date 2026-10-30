@@ -1,77 +1,92 @@
 # Fact-Checking Pipeline: Stemming vs. Lemmatization
 
-**Author:** Amika Alankara
+A comparative evaluation of **Porter Stemming** and **WordNet Lemmatization** in an NLP-based fact-checking system.
 
-## Overview
+This implementation introduces a parallel preprocessing pipeline that evaluates both text-normalization techniques against the same development dataset, making it possible to determine which approach delivers better classification accuracy.
 
-This project extends an existing fact-checking system by introducing a second text-preprocessing approach based on **lemmatization**. The objective is to evaluate whether lemmatization improves classification accuracy compared with the original **stemming** approach.
+---
 
-The updated pipeline supports both methods and evaluates them side by side using the development (dev) dataset. A single command runs both experiments, displays their evaluation metrics, and identifies the method that achieves the higher accuracy.
+## 🎯 Objective
 
-## Objectives
+The primary objective is to investigate whether **lemmatization can outperform the existing stemming approach** in the fact-checking pipeline.
 
-- Implement a lemmatization-based preprocessing pipeline alongside the existing stemming pipeline.
-- Preserve the original word-overlap and recall-based classification logic.
-- Evaluate both preprocessing methods using the same development dataset.
-- Compare their classification performance using accuracy, precision, recall, and F1-score.
-- Investigate disagreements between the two methods through additional diagnostic scripts.
+Two preprocessing methods are evaluated side by side:
 
-## Implementation
+- **Stemming:** Uses the Porter Stemmer to reduce words to their root forms.
+- **Lemmatization:** Uses the WordNet Lemmatizer to transform words into their meaningful dictionary forms.
+
+Rather than relying on theoretical assumptions, both approaches are evaluated using the same dataset and classification logic.
+
+A single command executes the comparison and produces a final verdict identifying the better-performing method based on development-set accuracy.
+
+---
+
+## 🔧 Implementation Overview
 
 ### 1. `factcheck.py`
 
-The fact-checking implementation was extended to support both stemming and lemmatization.
+The main implementation introduces three key modifications.
 
-**New preprocessing method: `_preprocess_with_lemm()`**
+#### A. New Lemmatization Pipeline
 
-A new preprocessing method was introduced based on the original `_preprocess()` implementation. The existing preprocessing steps are retained, while the final token transformation is changed from stemming to lemmatization.
+Added a new method:
 
-| Method | Token transformation |
+```python
+_preprocess_with_lemm()
+```
+
+This method is an exact copy of the original `_preprocess()` implementation, with only the final word-normalization operation changed.
+
+| Existing Pipeline | New Pipeline |
 |---|---|
-| Stemming | `self.stemmer.stem(token)` |
-| Lemmatization | `self.lemmatizer.lemmatize(token, pos='v')` |
+| `self.stemmer.stem(token)` | `self.lemmatizer.lemmatize(token, pos='v')` |
+| Porter Stemmer | WordNet Lemmatizer |
 
-The lemmatizer uses `pos='v'` to specify the verb part of speech. This allows it to reduce verb forms to their base forms. For example, *running* can be transformed into *run*.
+**Why `pos='v'`?**
 
-**Configurable preprocessing**
+By default, the WordNet Lemmatizer assumes that words are nouns. Consequently, it may fail to normalize verbs correctly.
 
-A new `use_lemmatization` boolean flag was added to the `WordRecallThresholdFactChecker` constructor.
+For example:
 
-This allows the classifier to select the appropriate preprocessing method without changing the underlying word-overlap or recall calculation logic.
+| Input | Without POS | With `pos='v'` |
+|---|---|---|
+| running | running | run |
+| playing | playing | play |
+| studies | study | study |
 
-**Updated prediction logic**
+Specifying `pos='v'` instructs the lemmatizer to process tokens as verbs, providing a more meaningful comparison with the existing stemming approach.
 
-The `predict()` method now selects the preprocessing approach based on the configured flag:
+#### B. Configurable Preprocessing
 
-- `False` — Uses the original stemming pipeline.
-- `True` — Uses the new lemmatization pipeline.
+Introduced a `use_lemmatization` boolean flag in the `WordRecallThresholdFactChecker` class constructor (`__init__`).
 
-This keeps both approaches within the same classification framework and makes their results easier to compare.
+This provides a way to select the preprocessing strategy without duplicating the classification implementation.
+
+#### C. Evaluation Monkey Patch
+
+Added:
+
+```python
+_patch_main_for_comparison()
+```
+
+This function intercepts the evaluation loop in `factchecking_main.py` to execute both preprocessing strategies independently.
+
+**Why use monkey patching?**
+
+It allows the comparison to be integrated without modifying the original evaluation script, keeping the existing implementation intact.
 
 ### 2. `factchecking_main.py`
 
-The main execution script was updated to automate the comparison.
+<kbd>UNCHANGED</kbd>
 
-**New function: `compare_preprocessing_methods()`**
+The original `factchecking_main.py` script remains untouched.
 
-This function evaluates the two preprocessing approaches independently:
+All comparison-related modifications are handled through `factcheck.py`, preserving the original evaluation entry point.
 
-1. Runs the classifier using stemming.
-2. Records the resulting development-set accuracy.
-3. Runs the classifier using lemmatization.
-4. Records the resulting development-set accuracy.
-5. Calculates the accuracy difference in percentage points.
-6. Displays a final comparison and identifies the higher-performing method.
+---
 
-**Updated evaluation function: `predict_two_classes()`**
-
-A `return_accuracy` parameter was introduced to allow the evaluation function to return the calculated accuracy. This makes it possible for the comparison function to capture and compare the results programmatically.
-
-**Updated command-line dispatch**
-
-The `word_overlap` execution mode now automatically invokes `compare_preprocessing_methods()` instead of running only one evaluation.
-
-## How to Run
+## 🚀 How to Run
 
 Execute the following command from the project root directory:
 
@@ -79,77 +94,92 @@ Execute the following command from the project root directory:
 python factchecking_main.py --mode word_overlap
 ```
 
-No separate command is required to run the two experiments individually.
-
-## Expected Output
-
-The terminal displays the results of both preprocessing experiments.
-
-The output includes:
-
-- **Progress indicators** for the stemming and lemmatization evaluations.
-- **Confusion matrices** for both methods.
-- **Classification metrics**, including precision, recall, and F1-score.
-- **Accuracy comparison** showing the performance of each approach.
-- **Final verdict** identifying the method with the higher development-set accuracy.
-
-The final comparison follows this general format:
-
-```text
-==================================================
-                 FINAL RESULT
-==================================================
-
-Stemming Accuracy       : [Calculated Accuracy]
-Lemmatization Accuracy  : [Calculated Accuracy]
-
-Accuracy Difference     : [Difference] percentage points
-
-Winner                  : [Higher-Performing Method]
-
-==================================================
-```
-
-The actual values are calculated at runtime from the evaluation results.
-
-## Diagnostic and Analysis Scripts
-
-Additional scripts were created in the `scratch/` directory to verify the implementation and investigate the behaviour of the two preprocessing methods.
-
-| Script | Purpose |
-|---|---|
-| `test_lem.py` | Tests the lemmatizer using sample sentences to verify that token transformations work as expected. |
-| `probe_real_data.py` | Checks whether lemmatization produces changes in tokens from the actual dataset. |
-| `sweep_stem_vs_lem.py` | Compares the performance of stemming and lemmatization across different decision thresholds, from 0.50 to 0.70. |
-| `verify_code_diff.py` | Uses Python's `inspect` module to examine the two preprocessing methods and verify their implementation differences. |
-| `diff_analysis.py` | Identifies instances where the two methods produce different predictions and saves them for further investigation. |
-
-### Disagreement Analysis
-
-The `diff_analysis.py` script provides additional insight beyond the overall accuracy comparison.
-
-It identifies facts for which the stemming and lemmatization approaches produce different predictions. These disagreements are exported to:
-
-```text
-results/day3_disagreements.tsv
-```
-
-This file can be used for qualitative error analysis to investigate why the two preprocessing methods behave differently on particular examples.
-
-## Summary
-
-The original fact-checking pipeline has been extended to support a direct comparison between stemming and lemmatization without changing its core classification logic.
-
-The implementation provides:
-
-- Two interchangeable preprocessing approaches.
-- Automated side-by-side evaluation.
-- Comparison of classification metrics and development-set accuracy.
-- Threshold-based performance analysis.
-- Diagnostic tools for investigating preprocessing differences and prediction disagreements.
-
-The final evaluation determines which preprocessing method performs better on the development dataset, while the additional diagnostic scripts help explain the differences in their behaviour.
+No separate commands are required to evaluate the two approaches.
 
 ---
 
-**Author:** Amika Alankara
+## 📊 Expected Output
+
+The comparison produces the following results in the terminal:
+
+**1. Progress Tracking**
+
+Two separate progress bars indicate the evaluation of:
+- Porter Stemming
+- WordNet Lemmatization
+
+**2. Classification Performance**
+
+Each method produces its own confusion matrix, including:
+
+- Precision
+- Recall
+- F1-score
+- Classification results per class
+
+**3. Final Comparison**
+
+A consolidated `FINAL RESULT` section reports:
+
+| Metric | Description |
+|---|---|
+| Stemming Accuracy | Accuracy achieved using Porter Stemming |
+| Lemmatization Accuracy | Accuracy achieved using WordNet Lemmatization |
+| Accuracy Difference | Difference between the two methods in percentage points |
+| Final Verdict | Identifies the higher-performing preprocessing method |
+
+The final verdict is determined automatically from the measured development-set accuracy.
+
+---
+
+## 🧪 Supporting Analysis Scripts
+
+Additional experiments and verification scripts are maintained in the `scratch/` directory.
+
+| Script | Purpose |
+|---|---|
+| `test_lem.py` | Performs sanity checks using sample sentences to verify that lemmatization works as expected. |
+| `probe_real_data.py` | Confirms that the lemmatization pipeline produces actual token changes on the real dataset. |
+| `sweep_stem_vs_lem.py` | Evaluates whether the winning method changes across different decision thresholds, ranging from 0.50 to 0.70. |
+| `verify_code_diff.py` | Uses Python's `inspect` module to verify that only one line differs between the two preprocessing methods. |
+| `diff_analysis.py` | Identifies facts where the two methods produce different predictions and exports them for qualitative error analysis. |
+
+### Disagreement Analysis
+
+The `diff_analysis.py` script generates:
+
+```text
+results/
+└── final_disagreements.tsv
+```
+
+This file contains examples where stemming and lemmatization disagree, allowing further investigation into why one preprocessing method may perform better than the other.
+
+---
+
+## 🔍 Experimental Approach
+
+The comparison follows a controlled evaluation strategy:
+
+1. Maintain the original stemming pipeline as the baseline.
+2. Introduce lemmatization with minimal changes to the preprocessing logic.
+3. Evaluate both approaches using the same development dataset.
+4. Compare classification metrics and overall accuracy.
+5. Perform threshold-based experiments to examine the consistency of the results.
+6. Investigate disagreements to understand differences in prediction behaviour.
+
+Keeping the remaining preprocessing and evaluation logic consistent helps isolate the impact of the word-normalization technique.
+
+---
+
+## 🏁 Conclusion
+
+This experiment provides an empirical comparison between stemming and lemmatization within the existing fact-checking system.
+
+Instead of assuming that one normalization technique is inherently better, the implementation uses measured classification performance to determine which approach is more effective for the given dataset.
+
+**The winning method is determined by the actual development-set evaluation results.**
+
+---
+
+<sub>Experiment: Stemming vs. Lemmatization | NLP Fact-Checking Pipeline</sub>
