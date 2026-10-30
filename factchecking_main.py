@@ -116,7 +116,7 @@ def print_eval_stats(confusion_mat, gold_label_indexer):
         rec = num_correct / num_gold
         if num_pred > 0:
             prec = num_correct / num_pred
-            f1 = 2 * prec * rec / (prec + rec)
+            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0
         else:
             prec = "undefined"
             f1 = "undefined"
@@ -155,13 +155,13 @@ def compare_preprocessing_methods(examples: List[FactExample]):
     print("-" * 72)
 
     if lem_acc > stem_acc:
-        print(f"  ==> LEMMATIZATION wins  (+{(lem_acc - stem_acc) * 100:.2f} pp)")
+        print(f"  ==> *** LEMMATIZATION WINS *** (+{(lem_acc - stem_acc) * 100:.2f} pp)")
         print(f"  ==> HIGHEST ACCURACY: Lemmatization = {lem_acc * 100:.2f}%")
     elif stem_acc > lem_acc:
-        print(f"  ==> STEMMING wins       (+{(stem_acc - lem_acc) * 100:.2f} pp)")
-        print(f"  ==> HIGHEST ACCURACY: Stemming      = {stem_acc * 100:.2f}%")
+        print(f"  ==> *** STEMMING WINS *** (+{(stem_acc - lem_acc) * 100:.2f} pp)")
+        print(f"  ==> HIGHEST ACCURACY: Stemming = {stem_acc * 100:.2f}%")
     else:
-        print(f"  ==> TIE — both methods hit the same accuracy = {stem_acc * 100:.2f}%")
+        print(f"  ==> *** TIE *** — both methods hit the same accuracy = {stem_acc * 100:.2f}%")
     print("=" * 72 + "\n")
 
 
@@ -173,9 +173,6 @@ if __name__ == "__main__":
 
     examples = read_fact_examples(args.labels_path, fact_to_passage_dict)
     print("Read " + repr(len(examples)) + " examples")
-    print("Fact and length of passages for each fact:")
-    for example in examples:
-        print(example.fact + ": " + repr([len(p["text"]) for p in example.passages]))
 
     assert args.mode in ['random', 'always_entail', 'word_overlap', 'parsing', 'entailment'], "invalid method"
     print(f"Method: {args.mode}")

@@ -1,3 +1,4 @@
+# scratch/test_lem.py
 import sys, os
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -8,7 +9,6 @@ from factcheck import WordRecallThresholdFactChecker
 
 def main():
     checker = WordRecallThresholdFactChecker(use_lemmatization=False)
-
     sentences = [
         "The dogs were running quickly.",
         "She studies hard and studied harder.",
@@ -31,12 +31,6 @@ def main():
             print("  >>> IDENTICAL — suspicious. Confirm wordnet is installed.")
         else:
             print("  >>> DIFFERENT — good, lemmatization is active.")
-
-    print("\n" + "=" * 70)
-    print("Quick wordnet probe (must print 'dog', not 'dogs'):")
-    from nltk.stem import WordNetLemmatizer
-    print("  lemmatize('dogs') =", WordNetLemmatizer().lemmatize("dogs"))
-    print("=" * 70)
 
 
 if __name__ == "__main__":
