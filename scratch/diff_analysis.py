@@ -1,9 +1,7 @@
-# scratch/diff_analysis.py
 import sys, os, csv
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
-
 from factchecking_main import read_passages, read_fact_examples
 from factcheck import WordRecallThresholdFactChecker
 
