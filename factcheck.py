@@ -1,5 +1,6 @@
 # factcheck.py
 import torch
+import string
 from typing import List
 import numpy as np
 import spacy
@@ -98,69 +99,130 @@ class AlwaysEntailedFactChecker(FactChecker):
 class WordRecallThresholdFactChecker(FactChecker):
     THRESHOLD = 0.6
 
-    def __init__(self):
+    def __init__(
+        self,
+        threshold: float = 0.6,
+        metric: str = "recall",
+        aggregation: str = "max",
+        use_stemmer: bool = True,
+        remove_stopwords: bool = True,
+        lowercase: bool = True,
+    ):
+        """
+        Word Overlap / Lexical Fact Checker (Part 1).
+
+        :param threshold: Decision boundary threshold (empirically tuned to 0.60 on the dev set).
+        :param metric: Scoring metric to use: 'recall', 'jaccard', or 'f1'.
+        :param aggregation: Multi-passage aggregation strategy: 'max' (taking max score across
+                            passages) or 'concat' (scoring against concatenated passages).
+        :param use_stemmer: Whether to apply Porter stemming (stemming vs none ablation).
+        :param remove_stopwords: Whether to remove English stopwords.
+        :param lowercase: Whether to convert text to lowercase.
+        """
+        self.threshold = threshold if threshold is not None else self.THRESHOLD
+        self.metric = metric
+        self.aggregation = aggregation
+        self.use_stemmer = use_stemmer
+        self.remove_stopwords = remove_stopwords
+        self.lowercase = lowercase
         self.stop_words = set(stopwords.words("english"))
         self.stemmer = PorterStemmer()
 
     def _preprocess(self, text: str) -> set:
-        """Convert raw test into clean set of tokens for overlap comparision"""
+        """
+        Converts raw text into a clean set of tokens for lexical overlap comparison.
 
-        #  lowercase + remove punctuation
-        text = text.lower()
+        Fixes applied:
+        1. Comprehensive punctuation handling via string.punctuation.
+        2. Replaces punctuation with whitespace (' ') instead of empty string ('')
+           to prevent unintended word concatenation (e.g., 'actor,singer' -> 'actor singer',
+           'Under-19' -> 'under 19').
+        3. Properly removes individual brackets and parentheses rather than searching
+           for adjacent pairs ('()', '[]', '{}').
+        4. Configurable lowercasing, stopword filtering, and Porter stemming for ablation studies.
+        """
+        if self.lowercase:
+            text = text.lower()
 
-        for punc in [",","!",".","?",":",";","()","[]","{}","'","\"","@","#","$","%","^","&","*","~"]:
-            text = text.replace(punc, "")
+        # Replace all punctuation characters with whitespace to preserve token boundaries
+        for punc in string.punctuation:
+            text = text.replace(punc, " ")
 
-        # Tokenize
+        # Tokenize on whitespace
         tokens = text.split()
 
-        # Remove stop words
-        tokens = [token for token in tokens if token not in self.stop_words]
+        # Remove English stopwords
+        if self.remove_stopwords:
+            tokens = [token for token in tokens if token not in self.stop_words]
 
-        # Remove prefixes , suffixes and Convert words to their root form (Stemming)
-        tokens = [self.stemmer.stem(token) for token in tokens]
+        # Convert words to their root form (Porter Stemming)
+        if self.use_stemmer and self.stemmer is not None:
+            tokens = [self.stemmer.stem(token) for token in tokens]
 
         return set(tokens)
 
     def _recall(self, fact_tokens: set, passage_tokens: set) -> float:
         """
-        Calculates the recall score, which measures the proportion of tokens from the fact that are present in the passage.
-        This helps determine how much of the original fact is covered by the supporting text.
-        Recall = |fact_tokens ∩ passage_tokens| / |fact_tokens|
+        Calculates recall score: |fact_tokens ∩ passage_tokens| / |fact_tokens|.
+        Measures the proportion of atomic fact tokens covered by the evidence passage.
         """
-        if len(fact_tokens) == 0:
+        if not fact_tokens:
             return 0.0
-        intersection = fact_tokens & passage_tokens
-        return len(intersection) / len(fact_tokens)
+        return len(fact_tokens & passage_tokens) / len(fact_tokens)
 
     def _jaccard(self, fact_tokens: set, passage_tokens: set) -> float:
         """
-        Calculates the Jaccard similarity score, which measures the similarity between the fact tokens and passage tokens.
-        This helps determine how much of the original fact is covered by the supporting text.
-        Jaccard = |fact_tokens ∩ passage_tokens| / |fact_tokens ∪ passage_tokens|
+        Calculates Jaccard similarity: |fact_tokens ∩ passage_tokens| / |fact_tokens ∪ passage_tokens|.
         """
-        if len(fact_tokens | passage_tokens) == 0:
+        union = fact_tokens | passage_tokens
+        if not union:
             return 0.0
-        return len(fact_tokens & passage_tokens) / len(fact_tokens | passage_tokens)
+        return len(fact_tokens & passage_tokens) / len(union)
 
     def _f1(self, fact_tokens: set, passage_tokens: set) -> float:
+        """
+        Calculates token-level F1 score (harmonic mean of precision and recall).
+        """
         intersection = fact_tokens & passage_tokens
-        if len(intersection) == 0:
+        if not intersection:
             return 0.0
         precision = len(intersection) / len(passage_tokens)
         recall = len(intersection) / len(fact_tokens)
         return 2 * precision * recall / (precision + recall)
 
     def predict(self, fact: str, passages: List[dict]) -> str:
+        """
+        Predicts 'S' (Supported) or 'NS' (Not Supported) based on lexical overlap score.
+        """
         fact_tokens = self._preprocess(fact)
+        if not fact_tokens:
+            return "NS"
 
-        max_score = 0.0
-        for passage in passages:
-            passage_tokens = self._preprocess(passage["text"])
-            score = self._recall(fact_tokens, passage_tokens)
-            max_score = max(max_score, score)
+        # Determine scoring function
+        if self.metric == "jaccard":
+            score_fn = self._jaccard
+        elif self.metric == "f1":
+            score_fn = self._f1
+        else:
+            score_fn = self._recall
 
-        return "S" if max_score > self.THRESHOLD else "NS"
+        thresh = self.threshold if self.threshold is not None else self.THRESHOLD
+
+        if self.aggregation == "concat":
+            concat_text = " ".join(p.get("text", "") for p in passages)
+            passage_tokens = self._preprocess(concat_text)
+            score = score_fn(fact_tokens, passage_tokens)
+            return "S" if score > thresh else "NS"
+        else:
+            # Default: max score across all retrieved passages
+            max_score = 0.0
+            for passage in passages:
+                passage_tokens = self._preprocess(passage.get("text", ""))
+                score = score_fn(fact_tokens, passage_tokens)
+                if score > max_score:
+                    max_score = score
+
+            return "S" if max_score > thresh else "NS"
 
 
 class EntailmentFactChecker(FactChecker):
@@ -829,7 +891,7 @@ class DatasetEDA(object):
 
         def clean_tokens(text):
             text = text.lower()
-            for punc in [",", "!", ".", "?", ":", ";", "()", "[]", "{}", "'", '"', "@", "#", "$", "%", "^", "&", "*", "~"]:
+            for punc in string.punctuation:
                 text = text.replace(punc, " ")
             return set(stemmer.stem(t) for t in text.split() if t not in stop_words)
 
