@@ -40,7 +40,7 @@ def main():
                 "lem_score": round(lm_score, 4)
             })
 
-    out_path = os.path.join(PROJECT_ROOT, "results", "final_disagreements.tsv")
+    out_path = os.path.join(PROJECT_ROOT, "results", "day3_disagreements.tsv")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     if disagreements:
         with open(out_path, "w", newline="", encoding="utf-8") as f:
