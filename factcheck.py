@@ -44,8 +44,7 @@ def _patch_main_for_comparison():
     main_mod.print_eval_stats = new_print_eval_stats
 
     def new_predict_two_classes(examples, fact_checker):
-        if isinstance(fact_checker, WordRecallThresholdFactChecker) and not getattr(fact_checker, 'use_lemmatization',
-                                                                                    False):
+        if isinstance(fact_checker, WordRecallThresholdFactChecker) and getattr(fact_checker, "compare", False):
             print("\n" + "=" * 72)
             print("  WORD_OVERLAP  —  PREPROCESSING COMPARISON")
             print("  Stemming (PorterStemmer)  vs  Lemmatization (WordNetLemmatizer)")
@@ -212,6 +211,7 @@ class WordRecallThresholdFactChecker(FactChecker):
         remove_stopwords: bool = True,
         lowercase: bool = True,
         use_lemmatization: bool = False,
+        compare: bool = False,
     ):
         """
         Word Overlap.
@@ -224,10 +224,8 @@ class WordRecallThresholdFactChecker(FactChecker):
         :param remove_stopwords: Whether to remove English stopwords.
         :param lowercase: Whether to convert text to lowercase.
         :param use_lemmatization: Whether to use WordNet lemmatization instead of stemming.
+        :param compare: Whether to run both stemming and lemmatization and compare them side by side.
         """
-        # Trigger the monkey-patch when this class is instantiated
-        _patch_main_for_comparison()
-
         self.threshold = threshold if threshold is not None else self.THRESHOLD
         self.metric = metric
         self.aggregation = aggregation
@@ -238,6 +236,11 @@ class WordRecallThresholdFactChecker(FactChecker):
         self.stemmer = PorterStemmer()
         self.lemmatizer = WordNetLemmatizer()
         self.use_lemmatization = use_lemmatization
+        self.compare = compare
+
+        # Trigger comparison monkey-patch ONLY when explicitly requested
+        if self.compare:
+            _patch_main_for_comparison()
 
     def _preprocess(self, text: str) -> set:
         """
