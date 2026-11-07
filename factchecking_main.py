@@ -9,6 +9,11 @@ from factcheck import *
 
 
 def _parse_args():
+    """
+    Parses command-line arguments for fact-checking evaluation modes and data paths.
+
+    :return: Parsed argparse.Namespace object containing CLI arguments.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, required=True, help="choose from [random', 'always_entail', 'word_overlap', 'parsing', 'entailment]")
     # parser.add_argument('--labels_path', type=str, default="data/labeled_ChatGPT.jsonl", help="path to the labels")
