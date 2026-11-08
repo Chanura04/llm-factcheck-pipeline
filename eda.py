@@ -51,7 +51,7 @@ except ImportError:
     TfidfVectorizer = None
     cosine_similarity = None
 
-from factcheck import EntailmentFactChecker, FactExample, WordRecallThresholdFactChecker
+from factcheck import EntailmentFactChecker, FactExample, WordRecallThresholdFactChecker, cross_validate_threshold
 from factchecking_main import read_passages, read_fact_examples
 
 
@@ -2322,7 +2322,14 @@ class DatasetEDA(object):
             text = f.get("text", "")
             if text in self.fact_to_passages:
                 examples.append(FactExample(text, self.fact_to_passages[text], f.get("label", "NS")))
-        return WordRecallThresholdFactChecker.cross_validate(examples, k=k, seed=seed, verbose=True)
+        checker = WordRecallThresholdFactChecker()
+        return cross_validate_threshold(
+            examples,
+            checker.decision_score,
+            k=k,
+            seed=seed,
+            name="Word-overlap threshold",
+        )
 
     def run(
         self,
