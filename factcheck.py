@@ -621,10 +621,10 @@ class EntailmentFactChecker(FactChecker):
         ent_model,
         strategy: str = "threshold",
         threshold: float = 0.50,
-        prune_threshold: float = 0.10,
+        prune_threshold: float = 0.20,
         use_pruning: bool = True,
         sentence_level: bool = True,
-        max_candidates: int = 6,
+        max_candidates: int = 15,
     ):
         """
         Initializes the Textual Entailment Fact Checker pipeline with multi-stage reasoning.
