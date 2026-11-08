@@ -26,3 +26,6 @@ Course Work.iml
 
 main.py
 scratch results/test_lem.py
+uv.lock
+src/*.toml
+src/.python-version
