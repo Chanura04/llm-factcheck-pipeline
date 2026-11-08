@@ -108,6 +108,54 @@ def _patch_main_for_comparison():
     main_mod._is_patched_for_comparison = True
 
 
+# False uses cross-validation. True keeps the fixed threshold.
+USE_HARDCODED_THRESHOLD = True
+
+
+def _install_threshold_cv_hook():
+    """
+    use_hardcoded_threshold True keeps the checker's fixed threshold. Otherwise the
+    shared cross-validation function chooses the threshold. Either way, one threshold line is printed.
+    """
+    main_mod = sys.modules.get("__main__")
+    if not main_mod or not hasattr(main_mod, "predict_two_classes"):
+        return
+    if getattr(main_mod, "_is_patched_for_threshold_cv", False):
+        return
+
+    original_predict = main_mod.predict_two_classes
+
+    def predict_with_tuned_threshold(examples, fact_checker):
+        if isinstance(fact_checker, EntailmentFactChecker):
+            label = "Entailment threshold"
+            if fact_checker.use_hardcoded_threshold:
+                print(f"{label}: {fact_checker.threshold:.2f}")
+            else:
+                cv = cross_validate_threshold(
+                    examples,
+                    fact_checker._entailment_score,
+                    strict_greater=False,
+                    initial_threshold=0.50,
+                    name=label,
+                )
+                fact_checker.threshold = cv["mean_optimal_threshold"]
+        elif isinstance(fact_checker, WordRecallThresholdFactChecker):
+            label = "Word-overlap threshold"
+            if fact_checker.use_hardcoded_threshold:
+                print(f"{label}: {fact_checker.threshold:.2f}")
+            else:
+                cv = cross_validate_threshold(
+                    examples,
+                    fact_checker.decision_score,
+                    name=label,
+                )
+                fact_checker.threshold = cv["mean_optimal_threshold"]
+        return original_predict(examples, fact_checker)
+
+    main_mod.predict_two_classes = predict_with_tuned_threshold
+    main_mod._is_patched_for_threshold_cv = True
+
+
 class FactExample(object):
     """
     :param fact: A string representing the fact to make a prediction on
@@ -269,6 +317,118 @@ class AlwaysEntailedFactChecker(FactChecker):
         return "S"
 
 
+def _labeled_example(example: Any):
+    """
+    Reads a fact, its passages, and a binary label from a FactExample or a dict.
+
+    Supported maps to 1. Not Supported and Irrelevant both map to 0.
+
+    :param example: FactExample, or a dict with 'fact'/'text', 'passages', and 'label'.
+    :return: (fact, passages, label) or None when the object has neither shape.
+    """
+    if hasattr(example, "fact"):
+        label = 1 if example.label == "S" else 0
+        return example.fact, example.passages, label
+    if isinstance(example, dict):
+        fact = example.get("text") or example.get("fact", "")
+        label = 1 if example.get("label") == "S" else 0
+        return fact, example.get("passages", []), label
+    return None
+
+
+def cross_validate_threshold(
+    examples: List[Any],
+    score_fn,
+    k: int = 5,
+    seed: int = 42,
+    strict_greater: bool = True,
+    initial_threshold: float = 0.60,
+    name: str = "Threshold",
+    verbose: bool = True,
+) -> dict:
+    """
+    Tunes one decision threshold with stratified k-fold cross-validation.
+
+    Both fact checkers use this function. Each checker supplies score_fn, which turns
+    a fact and its passages into one number. Word overlap predicts Supported when
+    score > threshold. Entailment predicts Supported when score >= threshold.
+
+    :param examples: FactExample objects, or dicts with 'fact'/'text', 'passages', and 'label'.
+    :param score_fn: Callable (fact, passages) -> float.
+    :param k: Number of stratified folds.
+    :param seed: Seed for shuffling each class before the split.
+    :param strict_greater: True uses score > cutoff. False uses score >= cutoff.
+    :param initial_threshold: Cutoff kept when every training accuracy is 0.
+    :param name: Label printed with the final threshold.
+    :param verbose: Whether to print the final threshold.
+    :return: Fold rows, mean held-out accuracy, and the mean chosen threshold.
+    """
+    scores = []
+    labels = []
+    for example in examples:
+        fields = _labeled_example(example)
+        if fields is None:
+            continue
+        fact_text, passages_list, label_val = fields
+        scores.append(float(score_fn(fact_text, passages_list)))
+        labels.append(label_val)
+
+    scores = np.array(scores)
+    labels = np.array(labels)
+    thresholds = np.arange(0.10, 0.95, 0.01)
+    n = len(scores)
+
+    np.random.seed(seed)
+    pos_idx = np.where(labels == 1)[0]
+    neg_idx = np.where(labels == 0)[0]
+    np.random.shuffle(pos_idx)
+    np.random.shuffle(neg_idx)
+
+    pos_folds = np.array_split(pos_idx, k)
+    neg_folds = np.array_split(neg_idx, k)
+    folds = [np.concatenate([pos_folds[i], neg_folds[i]]) for i in range(k)]
+
+    fold_results = []
+    for fold_i in range(k):
+        val_idx = folds[fold_i]
+        train_idx = np.setdiff1d(np.arange(n), val_idx)
+        train_scores, train_labels = scores[train_idx], labels[train_idx]
+        val_scores, val_labels = scores[val_idx], labels[val_idx]
+
+        best_t, best_train_acc = initial_threshold, 0.0
+        for t in thresholds:
+            train_pred = train_scores > t if strict_greater else train_scores >= t
+            acc = np.mean(train_pred == train_labels)
+            if acc > best_train_acc:
+                best_train_acc = acc
+                best_t = t
+
+        val_pred = val_scores > best_t if strict_greater else val_scores >= best_t
+        val_acc = np.mean(val_pred == val_labels)
+        fold_results.append({
+            "fold": fold_i + 1,
+            "train_n": len(train_idx),
+            "val_n": len(val_idx),
+            "optimal_threshold": round(float(best_t), 2),
+            "train_acc": float(best_train_acc),
+            "val_acc": float(val_acc),
+        })
+
+    mean_val_acc = float(np.mean([r["val_acc"] for r in fold_results]))
+    std_val_acc = float(np.std([r["val_acc"] for r in fold_results]))
+    mean_tau = float(np.mean([r["optimal_threshold"] for r in fold_results]))
+
+    if verbose:
+        print(f"{name}: {mean_tau:.2f}")
+
+    return {
+        "folds": fold_results,
+        "mean_val_acc": mean_val_acc,
+        "std_val_acc": std_val_acc,
+        "mean_optimal_threshold": mean_tau,
+    }
+
+
 class WordRecallThresholdFactChecker(FactChecker):
     THRESHOLD = 0.6
 
@@ -296,6 +456,7 @@ class WordRecallThresholdFactChecker(FactChecker):
         lowercase: bool = True,
         use_lemmatization: bool = False,
         compare: bool = False,
+        use_hardcoded_threshold: bool = USE_HARDCODED_THRESHOLD,
     ):
         """
         Initializes the Word Overlap Fact Checker baseline with configurable lexical preprocessing.
@@ -309,6 +470,7 @@ class WordRecallThresholdFactChecker(FactChecker):
         :param lowercase: Whether to convert text to lowercase.
         :param use_lemmatization: Whether to use WordNet lemmatization instead of stemming.
         :param compare: Whether to run both stemming and lemmatization and compare them side by side.
+        :param use_hardcoded_threshold: True keeps the fixed threshold. False tunes it with cross-validation.
         """
         self.threshold = threshold if threshold is not None else self.THRESHOLD
         self.metric = metric
@@ -321,10 +483,12 @@ class WordRecallThresholdFactChecker(FactChecker):
         self.lemmatizer = WordNetLemmatizer()
         self.use_lemmatization = use_lemmatization
         self.compare = compare
+        self.use_hardcoded_threshold = use_hardcoded_threshold
 
         # Trigger comparison monkey-patch ONLY when explicitly requested
         if self.compare:
             _patch_main_for_comparison()
+        _install_threshold_cv_hook()
 
     def _preprocess(self, text: str) -> set:
         """
@@ -453,15 +617,22 @@ class WordRecallThresholdFactChecker(FactChecker):
         :param passages: List of retrieved evidence passages, each a dictionary containing 'title' and 'text'.
         :return: 'S' if lexical overlap exceeds the decision threshold, otherwise 'NS'.
         """
-        preprocess_fn = (
-            self._preprocess_with_lemm if self.use_lemmatization else self._preprocess
-        )
+        thresh = self.threshold if self.threshold is not None else self.THRESHOLD
+        return "S" if self.decision_score(fact, passages) > thresh else "NS"
 
+    def decision_score(self, fact: str, passages: List[dict]) -> float:
+        """
+        Overlap score compared with the decision threshold.
+
+        :param fact: The atomic claim to verify.
+        :param passages: List of retrieved evidence passages.
+        :return: Highest passage score, or the score of the concatenated passages.
+        """
+        preprocess_fn = self._preprocess_with_lemm if self.use_lemmatization else self._preprocess
         fact_tokens = preprocess_fn(fact)
         if not fact_tokens:
-            return "NS"
+            return 0.0
 
-        # scoring function
         if self.metric == "jaccard":
             score_fn = self._jaccard
         elif self.metric == "f1":
@@ -471,147 +642,14 @@ class WordRecallThresholdFactChecker(FactChecker):
         else:
             score_fn = self._recall
 
-        thresh = self.threshold if self.threshold is not None else self.THRESHOLD
-
         if self.aggregation == "concat":
             concat_text = " ".join(p.get("text", "") for p in passages)
-            passage_tokens = preprocess_fn(concat_text)
-            score = score_fn(fact_tokens, passage_tokens)
-            return "S" if score > thresh else "NS"
-        else:
-            # Default: max score across all retrieved passages
-            max_score = 0.0
-            for passage in passages:
-                passage_tokens = preprocess_fn(passage.get("text", ""))
-                score = score_fn(fact_tokens, passage_tokens)
-                if score > max_score:
-                    max_score = score
+            return score_fn(fact_tokens, preprocess_fn(concat_text))
+        return max(
+            (score_fn(fact_tokens, preprocess_fn(p.get("text", ""))) for p in passages),
+            default=0.0,
+        )
 
-            return "S" if max_score > thresh else "NS"
-
-    @classmethod
-    def cross_validate(
-        cls,
-        examples: List[Any],
-        k: int = 5,
-        seed: int = 42,
-        metric: str = "recall",
-        aggregation: str = "max",
-        verbose: bool = True,
-    ) -> dict:
-        """
-        Performs k-fold stratified cross-validation on development examples to calibrate
-        and validate the decision threshold.
-
-        Addresses Part 1 grading criteria for 'appropriate validation procedures' in the
-        absence of a separate test set by demonstrating threshold stability across subsets.
-
-        :param examples: List of FactExample objects (or dicts with 'fact'/'text', 'passages', 'label').
-        :param k: Number of cross-validation folds (default: 5).
-        :param seed: Random seed for fold partitioning.
-        :param metric: Scoring metric ('recall', 'jaccard', 'f1', or 'cosine').
-        :param aggregation: Passage aggregation ('max' or 'concat').
-        :param verbose: Whether to print the formatted fold evaluation table.
-        :return: Dict containing fold metrics, mean validation accuracy, and mean optimal threshold.
-        """
-        checker = cls(metric=metric, aggregation=aggregation)
-        scores = []
-        labels = []
-
-        score_fn = getattr(checker, f"_{metric}", checker._recall)
-
-        for ex in examples:
-            if hasattr(ex, "fact"):
-                fact_text = ex.fact
-                passages_list = ex.passages
-                label_val = 1 if ex.label == "S" else 0
-            elif isinstance(ex, dict):
-                fact_text = ex.get("text") or ex.get("fact", "")
-                passages_list = ex.get("passages", [])
-                label_val = 1 if ex.get("label") == "S" else 0
-            else:
-                continue
-
-            fact_tokens = checker._preprocess(fact_text)
-            if aggregation == "concat":
-                concat_text = " ".join(p.get("text", "") for p in passages_list)
-                p_tokens = checker._preprocess(concat_text)
-                score = score_fn(fact_tokens, p_tokens)
-            else:
-                score = max(
-                    (score_fn(fact_tokens, checker._preprocess(p.get("text", ""))) for p in passages_list),
-                    default=0.0
-                )
-            scores.append(score)
-            labels.append(label_val)
-
-        scores = np.array(scores)
-        labels = np.array(labels)
-        n = len(scores)
-
-        # Stratified K-Fold partitioning
-        np.random.seed(seed)
-        pos_idx = np.where(labels == 1)[0]
-        neg_idx = np.where(labels == 0)[0]
-        np.random.shuffle(pos_idx)
-        np.random.shuffle(neg_idx)
-
-        pos_folds = np.array_split(pos_idx, k)
-        neg_folds = np.array_split(neg_idx, k)
-        folds = [np.concatenate([pos_folds[i], neg_folds[i]]) for i in range(k)]
-
-        fold_results = []
-        if verbose:
-            print(f"\n{'='*78}")
-            print(f"5-FOLD STRATIFIED CROSS-VALIDATION FOR THRESHOLD TUNING (Part 1)")
-            print(f"{'='*78}")
-            print(f"{'Fold':<6} | {'Train N':<8} | {'Val N':<7} | {'Optimal tau':<12} | {'Train Acc':<11} | {'Val Acc':<10}")
-            print(f"{'-'*78}")
-
-        for fold_i in range(k):
-            val_idx = folds[fold_i]
-            train_idx = np.setdiff1d(np.arange(n), val_idx)
-
-            train_scores, train_labels = scores[train_idx], labels[train_idx]
-            val_scores, val_labels = scores[val_idx], labels[val_idx]
-
-            best_t, best_train_acc = 0.60, 0.0
-            for t in np.arange(0.10, 0.95, 0.01):
-                acc = np.mean((train_scores > t) == train_labels)
-                if acc > best_train_acc:
-                    best_train_acc = acc
-                    best_t = t
-
-            val_acc = np.mean((val_scores > best_t) == val_labels)
-
-            fold_results.append({
-                "fold": fold_i + 1,
-                "train_n": len(train_idx),
-                "val_n": len(val_idx),
-                "optimal_threshold": round(float(best_t), 2),
-                "train_acc": float(best_train_acc),
-                "val_acc": float(val_acc)
-            })
-
-            if verbose:
-                print(f"{fold_i+1:<6} | {len(train_idx):<8} | {len(val_idx):<7} | {best_t:<12.2f} | {best_train_acc*100:<10.2f}% | {val_acc*100:<9.2f}%")
-
-        mean_val_acc = float(np.mean([r["val_acc"] for r in fold_results]))
-        std_val_acc = float(np.std([r["val_acc"] for r in fold_results]))
-        mean_tau = float(np.mean([r["optimal_threshold"] for r in fold_results]))
-
-        if verbose:
-            print(f"{'-'*78}")
-            print(f"Mean Validation Accuracy : {mean_val_acc*100:.2f}% (+/- {std_val_acc*100:.2f}%)")
-            print(f"Mean Optimal Threshold   : {mean_tau:.2f}")
-            print(f"{'='*78}\n")
-
-        return {
-            "folds": fold_results,
-            "mean_val_acc": mean_val_acc,
-            "std_val_acc": std_val_acc,
-            "mean_optimal_threshold": mean_tau
-        }
 
 class EntailmentFactChecker(FactChecker):
     """
@@ -644,6 +682,7 @@ class EntailmentFactChecker(FactChecker):
         use_pruning: bool = True,
         sentence_level: bool = True,
         max_candidates: int = 15,
+        use_hardcoded_threshold: bool = USE_HARDCODED_THRESHOLD,
     ):
         """
         Initializes the Textual Entailment Fact Checker pipeline with multi-stage reasoning.
@@ -655,6 +694,7 @@ class EntailmentFactChecker(FactChecker):
         :param use_pruning: Whether to filter out low-overlap candidate sentences prior to transformer NLI inference.
         :param sentence_level: If True, evaluates passage sentences individually with pronoun resolution and sliding windows; if False, evaluates full passages.
         :param max_candidates: Maximum number of top-ranked candidate premises to evaluate with NLI per claim (default: 6).
+        :param use_hardcoded_threshold: True keeps the fixed threshold. False tunes it with cross-validation.
         """
         self.ent_model = ent_model
         self.strategy = strategy
@@ -663,6 +703,7 @@ class EntailmentFactChecker(FactChecker):
         self.use_pruning = use_pruning
         self.sentence_level = sentence_level
         self.max_candidates = max_candidates
+        self.use_hardcoded_threshold = use_hardcoded_threshold
         self.overlap_checker = WordRecallThresholdFactChecker()
 
         if self.sentence_level:
@@ -670,6 +711,7 @@ class EntailmentFactChecker(FactChecker):
                 nltk.data.find("tokenizers/punkt_tab")
             except LookupError:
                 nltk.download("punkt_tab", quiet=True)
+        _install_threshold_cv_hook()
 
     @staticmethod
     def _clean_passage_text(text: str) -> str:
@@ -739,6 +781,38 @@ class EntailmentFactChecker(FactChecker):
         surviving.sort(key=lambda x: x[0], reverse=True)
         return [c[1] for c in surviving[: self.max_candidates]]
 
+    def _entailment_score(self, fact: str, passages: List[dict]) -> float:
+        """
+        Highest entailment probability used by the threshold decision.
+
+        Sentence mode keeps a probability only when entailment exceeds contradiction.
+        A claim with no surviving premise scores 0. Passage mode takes the highest
+        full-passage entailment probability.
+
+        :param fact: The atomic claim to verify.
+        :param passages: List of retrieved evidence passages.
+        :return: Decision score in [0.0, 1.0].
+        """
+        if not self.sentence_level:
+            max_score = 0.0
+            for passage in passages:
+                text = self._clean_passage_text(passage.get("text", ""))
+                max_score = max(max_score, self.ent_model.check_entailment(text, fact))
+            return max_score
+
+        candidate_premises = self._extract_candidates(fact, passages)
+        if not candidate_premises:
+            return 0.0
+
+        max_entailment = 0.0
+        for premise in candidate_premises:
+            p_ent, _p_neu, p_con = self.ent_model.check_entailment_raw(premise, fact)
+            if p_ent > p_con and p_ent > max_entailment:
+                max_entailment = p_ent
+            if max_entailment >= 0.95:
+                break
+        return max_entailment
+
     def predict_threshold(self, fact: str, passages: List[dict], threshold: float = None) -> str:
         """
         Continuous Probability Thresholding with Max-Pooling and Contradiction Guard.
@@ -749,32 +823,7 @@ class EntailmentFactChecker(FactChecker):
         :return: 'S' if max P(entailment) >= threshold and P(entailment) > P(contradiction), else 'NS'.
         """
         thresh = threshold if threshold is not None else self.threshold
-
-        if not self.sentence_level:
-            # Baseline full passage evaluation
-            max_score = 0.0
-            for p in passages:
-                p_text = self._clean_passage_text(p.get("text", ""))
-                score = self.ent_model.check_entailment(p_text, fact)
-                max_score = max(max_score, score)
-            return "S" if max_score >= thresh else "NS"
-
-        candidate_premises = self._extract_candidates(fact, passages)
-        if not candidate_premises:
-            return "NS"
-
-        max_entailment = 0.0
-        for premise in candidate_premises:
-            p_ent, p_neu, p_con = self.ent_model.check_entailment_raw(premise, fact)
-            # Contradiction guard: entailment must strictly exceed contradiction
-            if p_ent > p_con and p_ent > max_entailment:
-                max_entailment = p_ent
-
-            # Early stopping on decisive entailment
-            if max_entailment >= 0.95:
-                break
-
-        return "S" if max_entailment >= thresh else "NS"
+        return "S" if self._entailment_score(fact, passages) >= thresh else "NS"
 
     def predict_discrete(self, fact: str, passages: List[dict]) -> str:
         """

@@ -1,39 +1,3 @@
-"""
-ablation_experiments.py
-=======================
-Produces the two sets of metrics requested for the report:
-
-A. PRUNING ABLATION  (Entailment §2.2)
-   • No-pruning baseline: accuracy, macro-F1, runtime
-   • Pruning system:      accuracy, macro-F1, runtime
-   • Similarity metric used by the sieve: reported explicitly (Recall)
-   • Average candidates removed per claim
-
-B. PREPROCESSING ABLATION  (§2.1.9–§2.1.10)
-   Four granularity conditions × title on/off = 8 rows:
-     1. Whole passage  / no title
-     2. Whole passage  / with title
-     3. Single sentence / no title
-     4. Single sentence / with title
-     5. Sentence + 2-sent window / no title   ← final system
-     6. Sentence + 2-sent window / with title ← final system
-   Reports: accuracy, precision-S, recall-S, F1-S, macro-F1,
-            avg candidates / claim, runtime
-
-Outputs
--------
-  eda_plots/pruning_ablation.json
-  eda_plots/pruning_ablation.png
-  eda_plots/preprocessing_ablation_full.json
-  eda_plots/preprocessing_ablation_full.png
-
-Usage
------
-  python ablation_experiments.py                  # CPU, NLI from cache if present
-  python ablation_experiments.py --cuda           # GPU
-  python ablation_experiments.py --max_examples 50  # quick smoke-test
-"""
-
 import json
 import os
 import time
@@ -174,10 +138,9 @@ def _extract_candidates_full(fact, passages, overlap_checker, use_title: bool,
 
     n_before = len(candidates)
     if not prune:
-        # Return all, sorted by overlap descending, capped at max_candidates
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        kept = [c[1] for c in candidates[:max_candidates]]
-        return kept, n_before
+        # Baseline: score every candidate. No overlap cutoff and no top-k cap,
+        # so the number kept equals the number built.
+        return [c[1] for c in candidates], n_before
 
     surviving = [c for c in candidates if c[0] >= prune_threshold]
     surviving.sort(key=lambda x: x[0], reverse=True)
@@ -191,8 +154,8 @@ def run_pruning_ablation(examples, cuda: bool = False,
                          entailment_threshold: float = 0.50):
     """
     Compare two settings:
-      - use_pruning=False: pass ALL candidates to DeBERTa (capped at max_candidates)
-      - use_pruning=True:  filter by Recall >= prune_threshold first
+      - use_pruning=False: score every candidate. No overlap cutoff and no top-k cap.
+      - use_pruning=True:  keep Recall >= prune_threshold, then the top max_candidates.
 
     Metric used by the sieve: unigram token Recall
       (WordRecallThresholdFactChecker._recall)
@@ -205,8 +168,9 @@ def run_pruning_ablation(examples, cuda: bool = False,
     print("\n" + "=" * 72)
     print("A.  PRUNING ABLATION  (Entailment candidate sieve)")
     print("    Similarity metric: unigram token Recall (stemmed, no stopwords)")
-    print(f"    Prune threshold : >= {prune_threshold}")
-    print(f"    Max candidates  : {max_candidates}")
+    print(f"    Claims          : {len(examples)}")
+    print("    No pruning      : every candidate (cutoff 0, no cap)")
+    print(f"    With pruning    : recall >= {prune_threshold}, then top {max_candidates}")
     print("=" * 72)
 
     model, tokenizer = _load_model(cuda)
@@ -262,19 +226,21 @@ def run_pruning_ablation(examples, cuda: bool = False,
         avg_removed = avg_before - avg_after
 
         metrics["runtime_s"] = round(elapsed, 2)
+        metrics["runtime_min"] = round(elapsed / 60.0, 2)
         metrics["runtime_per_claim_s"] = round(elapsed / len(examples), 3) if examples else 0.0
         metrics["avg_candidates_before_pruning"] = round(avg_before, 2)
         metrics["avg_candidates_after_pruning"] = round(avg_after, 2)
         metrics["avg_candidates_removed"] = round(avg_removed, 2)
         metrics["similarity_metric"] = "unigram_recall"
-        metrics["prune_threshold"] = prune_threshold
+        metrics["prune_threshold"] = 0.0 if not use_pruning else prune_threshold
+        metrics["max_candidates"] = None if not use_pruning else max_candidates
         results[label] = metrics
 
         tag = "NO PRUNING" if not use_pruning else "WITH PRUNING"
         print(f"\n  [{tag}]")
         print(f"    Accuracy   : {metrics['accuracy']:.2f}%  ({metrics['correct']}/{metrics['total']})")
         print(f"    Macro-F1   : {metrics['macro_f1']:.2f}%")
-        print(f"    Runtime    : {elapsed:.1f} s  ({metrics['runtime_per_claim_s']:.3f} s/claim)")
+        print(f"    Runtime    : {metrics['runtime_min']:.1f} min  ({metrics['runtime_per_claim_s']:.2f} s/claim)")
         print(f"    Avg cands before pruning : {avg_before:.1f}")
         print(f"    Avg cands after  pruning : {avg_after:.1f}")
         print(f"    Avg cands removed        : {avg_removed:.1f}")
@@ -360,8 +326,7 @@ def _extract_for_condition(fact, passages, overlap_checker,
 
     n_before = len(candidates)
     if not prune:
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        return [c[1] for c in candidates[:max_candidates]], n_before
+        return [c[1] for c in candidates], n_before
 
     surviving = [c for c in candidates if c[0] >= prune_threshold]
     surviving.sort(key=lambda x: x[0], reverse=True)
@@ -500,11 +465,12 @@ def _plot_pruning_ablation(results: dict, output_dir: str):
     width = 0.35
 
     fig, (ax_bars, ax_right) = plt.subplots(1, 2, figsize=(14, 6))
+    pruned_cap = with_prune.get("max_candidates") or 15
     fig.suptitle(
-        "Pruning Ablation: No-Pruning Baseline vs. Recall-Sieve Pruning\n"
-        f"(DeBERTa, N={no_prune['total']}, prune τ={results['_meta'].get('prune_threshold', 0.2)}, "
-        f"similarity metric: Unigram Token Recall)",
-        fontsize=13, fontweight="bold",
+        "Pruning ablation: every candidate vs the recall sieve\n"
+        f"DeBERTa on {no_prune['total']} claims.  "
+        f"Pruned run keeps recall ≥ {with_prune['prune_threshold']:.2f}, then the top {int(pruned_cap)}.",
+        fontsize=13, fontweight="bold", y=0.98,
     )
 
     colors_no = "#c0392b"
@@ -525,10 +491,11 @@ def _plot_pruning_ablation(results: dict, output_dir: str):
 
     ax_bars.set_xticks(x)
     ax_bars.set_xticklabels([label for _, label in metric_keys], fontsize=10)
-    ax_bars.set_ylim(0, 100)
+    # Leave room above 100 so the value labels do not sit on the panel title.
+    ax_bars.set_ylim(0, 118)
     ax_bars.set_ylabel("Score (%)", fontsize=11, fontweight="bold")
-    ax_bars.set_title("Metric Comparison", fontsize=12, fontweight="bold")
-    ax_bars.legend(fontsize=10)
+    ax_bars.set_title("Metric comparison", fontsize=12, fontweight="bold", pad=14)
+    ax_bars.legend(fontsize=10, loc="upper right")
     ax_bars.grid(axis="y", linestyle=":", alpha=0.6)
 
     # Right panel: candidate stats + runtime
@@ -543,10 +510,14 @@ def _plot_pruning_ablation(results: dict, output_dir: str):
          f"{no_prune['macro_f1']:.2f}",
          f"{with_prune['macro_f1']:.2f}",
          f"{with_prune['macro_f1'] - no_prune['macro_f1']:+.2f}"],
-        ["Runtime (s)",
-         f"{no_prune['runtime_s']:.1f}",
-         f"{with_prune['runtime_s']:.1f}",
-         f"{with_prune['runtime_s'] - no_prune['runtime_s']:+.1f}"],
+        ["Runtime (min)",
+         f"{no_prune['runtime_min']:.1f}",
+         f"{with_prune['runtime_min']:.1f}",
+         f"{with_prune['runtime_min'] - no_prune['runtime_min']:+.1f}"],
+        ["Seconds / claim",
+         f"{no_prune['runtime_per_claim_s']:.2f}",
+         f"{with_prune['runtime_per_claim_s']:.2f}",
+         f"{with_prune['runtime_per_claim_s'] - no_prune['runtime_per_claim_s']:+.2f}"],
         ["Avg cands (before)",
          f"{no_prune['avg_candidates_before_pruning']:.1f}",
          f"{with_prune['avg_candidates_before_pruning']:.1f}",
@@ -582,7 +553,7 @@ def _plot_pruning_ablation(results: dict, output_dir: str):
     ax_right.set_title("Candidate & Timing Summary", fontsize=12, fontweight="bold", pad=10)
 
     path = os.path.join(output_dir, "pruning_ablation.png")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"  [OK] Pruning ablation plot saved to: {path}")
@@ -651,7 +622,11 @@ def _plot_preprocessing_ablation(results: dict, output_dir: str):
         ax.set_xticklabels([display_names[k] for k in ordered_keys],
                            fontsize=8.5, fontweight="bold")
         ax.set_ylabel(metric_label, fontsize=10, fontweight="bold")
-        ax.set_title(metric_label, fontsize=11, fontweight="bold")
+        ax.set_title(metric_label, fontsize=11, fontweight="bold", pad=12)
+        if metric_key == "avg_candidates":
+            ax.set_ylim(0, (max(vals) * 1.25) if vals else 1)
+        else:
+            ax.set_ylim(0, 115)
         ax.grid(axis="y", linestyle=":", alpha=0.6)
         # Highlight final system bar
         final_idx = ordered_keys.index("sentence_window__with_title")
@@ -659,7 +634,7 @@ def _plot_preprocessing_ablation(results: dict, output_dir: str):
         bars[final_idx].set_linewidth(2.5)
 
     path = os.path.join(output_dir, "preprocessing_ablation_full.png")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
     fig.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"  [OK] Preprocessing ablation plot saved to: {path}")
@@ -684,7 +659,14 @@ def main():
                         help="Skip section B and only run pruning ablation")
     args = parser.parse_args()
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    output_dir = OUTPUT_DIR
+    if args.max_examples:
+        output_dir = os.path.join(OUTPUT_DIR, "ablation_smoke")
+        print(
+            f"Smoke test on {args.max_examples} claims. "
+            f"Figures are written to {output_dir} and are not the report plots."
+        )
+    os.makedirs(output_dir, exist_ok=True)
 
     # Load data
     print("Loading data...")
@@ -704,20 +686,20 @@ def main():
     # --- A: Pruning ablation ---
     if not args.skip_pruning:
         pruning_results = run_pruning_ablation(examples, **kw)
-        pruning_path = os.path.join(OUTPUT_DIR, "pruning_ablation.json")
+        pruning_path = os.path.join(output_dir, "pruning_ablation.json")
         with open(pruning_path, "w", encoding="utf-8") as fh:
             json.dump(pruning_results, fh, indent=2)
         print(f"Pruning ablation JSON saved to: {pruning_path}")
-        _plot_pruning_ablation(pruning_results, OUTPUT_DIR)
+        _plot_pruning_ablation(pruning_results, output_dir)
 
     # --- B: Preprocessing ablation ---
     if not args.skip_preprocessing:
         prep_results = run_preprocessing_ablation(examples, **kw)
-        prep_path = os.path.join(OUTPUT_DIR, "preprocessing_ablation_full.json")
+        prep_path = os.path.join(output_dir, "preprocessing_ablation_full.json")
         with open(prep_path, "w", encoding="utf-8") as fh:
             json.dump(prep_results, fh, indent=2)
         print(f"Preprocessing ablation JSON saved to: {prep_path}")
-        _plot_preprocessing_ablation(prep_results, OUTPUT_DIR)
+        _plot_preprocessing_ablation(prep_results, output_dir)
 
     print("\nAll ablation experiments complete.")
 
