@@ -51,7 +51,7 @@ except ImportError:
     TfidfVectorizer = None
     cosine_similarity = None
 
-from factcheck import FactExample, WordRecallThresholdFactChecker
+from factcheck import EntailmentFactChecker, FactExample, WordRecallThresholdFactChecker
 from factchecking_main import read_passages, read_fact_examples
 
 
@@ -751,11 +751,98 @@ class DatasetEDA(object):
         print(f"  [OK] Advanced Dashboard saved to: {adv_dashboard_path}")
         print(f"  [OK] All 9 individual high-res figures saved to '{output_dir}/'")
 
-        # -------------------------------------------------------------
-        # Preprocessing Comparison Plots: Stemming vs. Lemmatization
-        # -------------------------------------------------------------
+        # Score or load the live entailment run before any figure reads it.
+        # Otherwise a missing strategy file makes the result plots keep the old fallback.
+        self.plot_entailment_strategy_comparison(output_dir=output_dir)
         self.generate_preprocessing_comparison_plots(output_dir=output_dir)
+        self.plot_word_overlap_methods(output_dir=output_dir)
+        self.plot_overlap_aggregation_comparison(output_dir=output_dir)
+        self.plot_final_results(output_dir=output_dir)
         print("=" * 60 + "\n")
+
+    def _load_entailment_plot_metrics(self, output_dir: str = "eda_plots") -> dict:
+        """
+        Builds the stemming and lemmatization blocks drawn by the entailment figures.
+
+        The current checker result comes from entailment_strategy_metrics.json, using the
+        decision rule that EntailmentFactChecker uses by default. Candidate pruning in that
+        checker is stemmed, so this result is the stemming block. A lemmatization block is
+        read from entailment_metrics.json when a previous ablation stored one there.
+        """
+        import inspect
+
+        strategy_name = inspect.signature(EntailmentFactChecker.__init__).parameters["strategy"].default
+        strategy_path = os.path.join(output_dir, "entailment_strategy_metrics.json")
+        metrics_path = os.path.join(output_dir, "entailment_metrics.json")
+
+        stored = {}
+        if os.path.exists(metrics_path):
+            try:
+                with open(metrics_path, "r", encoding="utf-8") as handle:
+                    loaded = json.load(handle)
+                if isinstance(loaded, dict):
+                    stored = loaded
+            except (OSError, json.JSONDecodeError):
+                stored = {}
+
+        current = None
+        if os.path.exists(strategy_path):
+            try:
+                with open(strategy_path, "r", encoding="utf-8") as handle:
+                    strategy_metrics = json.load(handle)
+                if isinstance(strategy_metrics, dict):
+                    current = strategy_metrics.get(strategy_name) or strategy_metrics.get("threshold")
+            except (OSError, json.JSONDecodeError):
+                current = None
+
+        previous_stemming = {
+            "accuracy": 85.06787330316742,
+            "correct": 188,
+            "total": 221,
+            "tp": 93,
+            "fn": 19,
+            "fp": 14,
+            "tn": 95,
+            "precision_s": 93 / 107,
+            "recall_s": 93 / 112,
+            "f1_s": 0.8493150684931506,
+            "precision_ns": 95 / 114,
+            "recall_ns": 95 / 109,
+            "f1_ns": 0.852017937219731,
+        }
+        previous_lemmatization = {
+            "accuracy": 83.710407239819,
+            "correct": 185,
+            "total": 221,
+            "tp": 91,
+            "fn": 21,
+            "fp": 15,
+            "tn": 94,
+            "precision_s": 91 / 106,
+            "recall_s": 91 / 112,
+            "f1_s": 0.8348623853211009,
+            "precision_ns": 94 / 115,
+            "recall_ns": 94 / 109,
+            "f1_ns": 0.8392857142857143,
+        }
+
+        def with_macro(block: dict) -> dict:
+            filled = dict(block)
+            if "macro_f1" not in filled:
+                filled["macro_f1"] = (filled.get("f1_s", 0.0) + filled.get("f1_ns", 0.0)) / 2.0
+            return filled
+
+        stemming = with_macro(current or stored.get("stemming") or previous_stemming)
+        lemmatization = with_macro(stored.get("lemmatization") or previous_lemmatization)
+        merged = {"stemming": stemming, "lemmatization": lemmatization}
+
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            with open(metrics_path, "w", encoding="utf-8") as handle:
+                json.dump(merged, handle, indent=2)
+        except OSError:
+            pass
+        return merged
 
     def compute_preprocessing_accuracies(self, threshold: float = 0.60):
         """
@@ -821,55 +908,10 @@ class DatasetEDA(object):
                 "macro_f1": macro_f1,
             }
 
-        # 2. Entailment metrics (actual pipeline evaluation with DeBERTa cross-encoder)
-        ent_metrics_path = os.path.join("eda_plots", "entailment_metrics.json")
-        ent_data = None
-        if os.path.exists(ent_metrics_path):
-            try:
-                with open(ent_metrics_path, "r", encoding="utf-8") as emf:
-                    ent_data = json.load(emf)
-            except Exception:
-                pass
-
-        if not ent_data:
-            ent_data = {
-                "stemming": {
-                    "accuracy": 85.06787330316742,
-                    "correct": 188,
-                    "total": 221,
-                    "tp": 93,
-                    "fn": 19,
-                    "fp": 14,
-                    "tn": 95,
-                    "precision_s": 93 / 107,
-                    "recall_s": 93 / 112,
-                    "f1_s": 0.8493150684931506,
-                    "precision_ns": 95 / 114,
-                    "recall_ns": 95 / 109,
-                    "f1_ns": 0.852017937219731,
-                },
-                "lemmatization": {
-                    "accuracy": 83.710407239819,
-                    "correct": 185,
-                    "total": 221,
-                    "tp": 91,
-                    "fn": 21,
-                    "fp": 15,
-                    "tn": 94,
-                    "precision_s": 91 / 106,
-                    "recall_s": 91 / 112,
-                    "f1_s": 0.8348623853211009,
-                    "precision_ns": 94 / 115,
-                    "recall_ns": 94 / 109,
-                    "f1_ns": 0.8392857142857143,
-                },
-            }
-
-        for k in ["stemming", "lemmatization"]:
-            if "macro_f1" not in ent_data[k]:
-                f1_s = ent_data[k].get("f1_s", 0.0)
-                f1_ns = ent_data[k].get("f1_ns", 0.0)
-                ent_data[k]["macro_f1"] = (f1_s + f1_ns) / 2.0
+        # 2. Entailment metrics. The live DeBERTa run is entailment_strategy_metrics.json.
+        # Pruning in EntailmentFactChecker always stems, so that run is the stemming result.
+        # Lemmatized pruning is a separate ablation and is kept from entailment_metrics.json.
+        ent_data = self._load_entailment_plot_metrics()
 
         return {
             "word_overlap": {
@@ -1458,6 +1500,811 @@ class DatasetEDA(object):
             print(f"  [OK] Metric comparison plot saved to: {comparison_path}")
         except Exception as exc:
             print(f"  [EDA WARNING] Could not save similarity metric plot: {exc}")
+
+    def plot_word_overlap_methods(self, output_dir: str = "eda_plots"):
+        """
+        Compares the word-overlap scorers in WordRecallThresholdFactChecker
+        (recall, F1, Jaccard, and cosine) on the labeled dev set.
+
+        Each method is scored with the checker's stemming and stopword preprocessing,
+        taking the maximum score across retrieved passages. Classification metrics
+        are reported at the threshold that maximizes accuracy, because Jaccard, F1,
+        and cosine shrink when passages are long and cannot share the recall cutoff.
+
+        :param output_dir: Directory where the comparison figure is saved.
+        """
+        if not self.raw_facts:
+            self.load_data()
+
+        passages_dict = read_passages(self.passages_path)
+        examples = read_fact_examples(self.dev_path, passages_dict)
+        checker = WordRecallThresholdFactChecker(
+            use_stemmer=True,
+            remove_stopwords=True,
+            lowercase=True,
+            use_lemmatization=False,
+        )
+        methods = [
+            ("recall", "Word Recall", checker._recall),
+            ("f1", "Word F1", checker._f1),
+            ("jaccard", "Word Jaccard", checker._jaccard),
+            ("cosine", "Word Cosine", checker._cosine),
+        ]
+
+        score_lists = {key: [] for key, _, _ in methods}
+        labels = []
+        for ex in examples:
+            gold = 1 if ex.label == "S" else 0
+            fact_tokens = checker._preprocess(ex.fact)
+            passage_sets = [checker._preprocess(p.get("text", "")) for p in ex.passages]
+            for key, _, score_fn in methods:
+                if not fact_tokens or not passage_sets:
+                    best = 0.0
+                else:
+                    best = max((score_fn(fact_tokens, tokens) for tokens in passage_sets), default=0.0)
+                score_lists[key].append(best)
+            labels.append(gold)
+
+        total_ex = len(labels)
+        plain_names = {
+            "recall": "Recall",
+            "f1": "F1",
+            "jaccard": "Jaccard",
+            "cosine": "Cosine",
+        }
+        what_it_measures = {
+            "recall": "Fraction of the claim's words\nfound in the passage",
+            "f1": "Coverage of the claim, balanced\nagainst extra passage words",
+            "jaccard": "Shared words divided by every\nword in the claim or passage",
+            "cosine": "Shared words, reduced when the\nclaim or the passage is long",
+        }
+        bar_colors = {
+            "recall": "#2980b9",
+            "f1": "#8e44ad",
+            "jaccard": "#d35400",
+            "cosine": "#148f77",
+        }
+        results = []
+        for key, name, _ in methods:
+            scores = score_lists[key]
+            best_acc, best_thresh, best_correct = -1.0, 0.0, 0
+            best_prec_s = best_rec_s = best_f1_s = 0.0
+            best_prec_ns = best_rec_ns = best_f1_ns = 0.0
+            for t in np.arange(0.01, 0.99, 0.01):
+                preds = [1 if s > t else 0 for s in scores]
+                tp = sum(p == 1 and lab == 1 for p, lab in zip(preds, labels))
+                fp = sum(p == 1 and lab == 0 for p, lab in zip(preds, labels))
+                tn = sum(p == 0 and lab == 0 for p, lab in zip(preds, labels))
+                fn = sum(p == 0 and lab == 1 for p, lab in zip(preds, labels))
+                correct = tp + tn
+                acc = correct / total_ex if total_ex else 0.0
+                prec_s = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+                rec_s = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+                f1_s = 2 * prec_s * rec_s / (prec_s + rec_s) if (prec_s + rec_s) > 0 else 0.0
+                prec_ns = tn / (tn + fn) if (tn + fn) > 0 else 0.0
+                rec_ns = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+                f1_ns = 2 * prec_ns * rec_ns / (prec_ns + rec_ns) if (prec_ns + rec_ns) > 0 else 0.0
+                macro_f1 = (f1_s + f1_ns) / 2.0
+                # Prefer the higher accuracy, then the higher macro F1, then the lower threshold.
+                if (acc, macro_f1, -t) > (best_acc, (best_f1_s + best_f1_ns) / 2.0, -best_thresh):
+                    best_acc = acc
+                    best_thresh = float(t)
+                    best_correct = correct
+                    best_prec_s, best_rec_s, best_f1_s = prec_s, rec_s, f1_s
+                    best_prec_ns, best_rec_ns, best_f1_ns = prec_ns, rec_ns, f1_ns
+
+            results.append({
+                "key": key,
+                "name": plain_names[key],
+                "full_name": name,
+                "meaning": what_it_measures[key],
+                "scores": scores,
+                "thresh": best_thresh,
+                "correct": best_correct,
+                "acc": best_acc,
+                "prec_s": best_prec_s,
+                "rec_s": best_rec_s,
+                "f1_s": best_f1_s,
+                "prec_ns": best_prec_ns,
+                "rec_ns": best_rec_ns,
+                "f1_ns": best_f1_ns,
+                "macro_f1": (best_f1_s + best_f1_ns) / 2.0,
+            })
+
+        print("\n" + "=" * 118)
+        print("WORD OVERLAP SCORING METHODS (DEV SET, STEM + STOPWORDS, MAX OVER PASSAGES)")
+        print("Precision, recall, and F1 use each method's accuracy-maximizing threshold. Predict S when score > tau.")
+        print("=" * 118)
+        print(
+            f"{'Method':<16} | {'Tau':>6} | {'Acc':>6} | "
+            f"{'P(S)':>6} | {'R(S)':>6} | {'F1(S)':>6} | "
+            f"{'P(NS)':>6} | {'R(NS)':>6} | {'F1(NS)':>6} | {'Macro':>6}"
+        )
+        print("-" * 118)
+        for r in results:
+            print(
+                f"{r['name']:<16} | {r['thresh']:>6.2f} | {r['acc'] * 100:>6.2f} | "
+                f"{r['prec_s'] * 100:>6.2f} | {r['rec_s'] * 100:>6.2f} | {r['f1_s'] * 100:>6.2f} | "
+                f"{r['prec_ns'] * 100:>6.2f} | {r['rec_ns'] * 100:>6.2f} | {r['f1_ns'] * 100:>6.2f} | "
+                f"{r['macro_f1'] * 100:>6.2f}"
+            )
+        print("=" * 118 + "\n")
+
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            # Lowest accuracy at the bottom, so the best method sits at the top of the bars.
+            ranked = sorted(results, key=lambda r: r["acc"])
+            best_first = list(reversed(ranked))
+            winner = best_first[0]
+
+            fig = plt.figure(figsize=(13.4, 5.8))
+            fig.suptitle(
+                f"Recall is the best word-overlap score: {winner['acc'] * 100:.1f}% of {total_ex} claims",
+                fontsize=16,
+                fontweight="bold",
+                y=0.98,
+            )
+            gs = fig.add_gridspec(
+                1, 2,
+                width_ratios=[2.35, 1.0],
+                wspace=0.28,
+                left=0.10,
+                right=0.98,
+                top=0.82,
+                bottom=0.16,
+            )
+            ax_rank = fig.add_subplot(gs[0, 0])
+            ax_table = fig.add_subplot(gs[0, 1])
+
+            y = np.arange(len(ranked))
+            acc_pct = [r["acc"] * 100 for r in ranked]
+            ax_rank.barh(
+                y,
+                acc_pct,
+                color=[bar_colors[r["key"]] for r in ranked],
+                edgecolor="black",
+                height=0.62,
+                zorder=2,
+            )
+            for i, r in enumerate(ranked):
+                ax_rank.text(
+                    r["acc"] * 100 - 1.2,
+                    i,
+                    f"{r['acc'] * 100:.1f}%",
+                    va="center",
+                    ha="right",
+                    color="white",
+                    fontsize=11,
+                    fontweight="bold",
+                )
+                ax_rank.text(
+                    r["acc"] * 100 + 1.0,
+                    i,
+                    f"{r['correct']}/{total_ex} correct",
+                    va="center",
+                    ha="left",
+                    color="#1c2833",
+                    fontsize=9,
+                )
+            ax_rank.set_yticks(y)
+            ax_rank.set_yticklabels(
+                [f"{r['name']}\ncutoff {r['thresh']:.2f}" for r in ranked],
+                fontsize=11,
+                fontweight="bold",
+            )
+            ax_rank.set_xlim(0, 118)
+            ax_rank.set_xlabel("Claims classified correctly (%)", fontsize=11, fontweight="bold")
+            ax_rank.set_title(
+                "How many claims each method gets right",
+                fontsize=13,
+                fontweight="bold",
+                loc="left",
+            )
+            ax_rank.grid(axis="x", linestyle=":", alpha=0.7, zorder=0)
+            ax_rank.set_axisbelow(True)
+            ax_rank.tick_params(axis="y", length=0)
+
+            ax_table.axis("off")
+            ax_table.set_title("Results", fontsize=13, fontweight="bold", loc="left", pad=10)
+            row_colors = {
+                "recall": "#d6eaf8",
+                "cosine": "#d5f5e3",
+                "f1": "#e8daef",
+                "jaccard": "#fdebd0",
+            }
+            table_data = [["Method", "Cutoff", "Correct"]]
+            for r in best_first:
+                table_data.append([
+                    r["name"],
+                    f"{r['thresh']:.2f}",
+                    f"{r['correct']}/{total_ex}",
+                ])
+            table = ax_table.table(
+                cellText=table_data,
+                loc="upper center",
+                cellLoc="center",
+                colWidths=[0.34, 0.30, 0.36],
+                bbox=[0.02, 0.18, 0.96, 0.72],
+            )
+            table.auto_set_font_size(False)
+            table.set_fontsize(12)
+            for (row_idx, col_idx), cell in table.get_celld().items():
+                cell.set_edgecolor("#1c2833")
+                cell.set_linewidth(0.6)
+                if row_idx == 0:
+                    cell.set_facecolor("#1c2833")
+                    cell.set_text_props(color="white", fontweight="bold", fontsize=12)
+                    cell.set_height(0.16)
+                else:
+                    method = best_first[row_idx - 1]
+                    cell.set_facecolor(row_colors[method["key"]])
+                    cell.set_text_props(fontweight="bold" if row_idx == 1 else "normal", fontsize=12)
+                    cell.set_height(0.18)
+            ax_table.text(
+                0.02,
+                0.02,
+                "A claim is Supported when its score is above the cutoff.\n"
+                "Each method uses the cutoff that gets the most claims right.",
+                transform=ax_table.transAxes,
+                fontsize=8.5,
+                va="bottom",
+                ha="left",
+                color="#1c2833",
+            )
+            comparison_path = os.path.join(output_dir, "word_overlap_methods_comparison.png")
+            fig.savefig(comparison_path, dpi=200)
+            plt.close(fig)
+            print(f"  [OK] Word overlap method comparison saved to: {comparison_path}")
+        except Exception as exc:
+            print(f"  [EDA WARNING] Could not save word overlap method plot: {exc}")
+
+    def plot_overlap_aggregation_comparison(
+        self,
+        output_dir: str = "eda_plots",
+        threshold: float = 0.60,
+    ):
+        """
+        Compares the two passage aggregations in WordRecallThresholdFactChecker.predict.
+        Best passage keeps the highest recall. Joined passages score every passage as one text.
+        Both use the recall cutoff from the checker (Supported only when the score is above it).
+
+        :param output_dir: Directory where the figure is saved.
+        :param threshold: Recall cutoff shared by both aggregations.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        passages_dict = read_passages(self.passages_path)
+        examples = read_fact_examples(self.dev_path, passages_dict)
+
+        def evaluate(aggregation: str) -> dict:
+            checker = WordRecallThresholdFactChecker(
+                threshold=threshold,
+                metric="recall",
+                aggregation=aggregation,
+                use_stemmer=True,
+                remove_stopwords=True,
+                lowercase=True,
+                use_lemmatization=False,
+            )
+            tp = fn = fp = tn = 0
+            for ex in examples:
+                gold = "NS" if ex.label == "IR" else ex.label
+                pred = checker.predict(ex.fact, ex.passages)
+                if gold == "S" and pred == "S":
+                    tp += 1
+                elif gold == "S" and pred == "NS":
+                    fn += 1
+                elif gold == "NS" and pred == "S":
+                    fp += 1
+                else:
+                    tn += 1
+            total = len(examples)
+            precision_s = tp / (tp + fp) if (tp + fp) else 0.0
+            recall_s = tp / (tp + fn) if (tp + fn) else 0.0
+            f1_s = (
+                2 * precision_s * recall_s / (precision_s + recall_s)
+                if (precision_s + recall_s)
+                else 0.0
+            )
+            correct = tp + tn
+            return {
+                "tp": tp,
+                "fn": fn,
+                "fp": fp,
+                "tn": tn,
+                "total": total,
+                "correct": correct,
+                "accuracy": (correct / total * 100.0) if total else 0.0,
+                "precision_s": precision_s * 100.0,
+                "recall_s": recall_s * 100.0,
+                "f1_s": f1_s * 100.0,
+            }
+
+        series = [
+            ("Best passage", evaluate("max"), "#2c3e50"),
+            ("Joined passages", evaluate("concat"), "#16a085"),
+        ]
+        metric_keys = [
+            ("accuracy", "Accuracy"),
+            ("precision_s", "Precision"),
+            ("recall_s", "Recall"),
+            ("f1_s", "F1"),
+        ]
+        total = int(series[0][1]["total"])
+
+        fig = plt.figure(figsize=(13.4, 10.2))
+        fig.suptitle(
+            "Word overlap: best passage vs joined passages",
+            fontsize=16,
+            fontweight="bold",
+            y=0.98,
+        )
+        fig.text(
+            0.5,
+            0.935,
+            f"Recall score, cutoff {threshold:.2f}, on {total} claims.  "
+            "Best passage keeps the strongest passage.  Joined passages score every passage as one text.",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="#34495e",
+        )
+        gs = fig.add_gridspec(
+            2, 2,
+            height_ratios=[1.05, 1.0],
+            hspace=0.38,
+            wspace=0.16,
+            left=0.07,
+            right=0.98,
+            top=0.86,
+            bottom=0.08,
+        )
+        ax_bars = fig.add_subplot(gs[0, :])
+        cm_axes = [fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1])]
+
+        x = np.arange(len(metric_keys))
+        width = 0.34
+        for i, (name, details, color) in enumerate(series):
+            vals = [details[key] for key, _ in metric_keys]
+            offset = (i - 0.5) * width
+            bars = ax_bars.bar(
+                x + offset, vals, width=width, color=color, edgecolor="black", label=name, zorder=2
+            )
+            for bar, value in zip(bars, vals):
+                ax_bars.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    value - 3.5,
+                    f"{value:.1f}",
+                    ha="center",
+                    va="top",
+                    color="white",
+                    fontsize=11,
+                    fontweight="bold",
+                    zorder=3,
+                )
+        ax_bars.set_xticks(x)
+        ax_bars.set_xticklabels([label for _, label in metric_keys], fontsize=12, fontweight="bold")
+        ax_bars.set_ylim(0, 100)
+        ax_bars.set_ylabel("Score (%)", fontsize=12, fontweight="bold")
+        ax_bars.set_title("Accuracy, precision, recall, and F1", fontsize=13, fontweight="bold")
+        ax_bars.legend(loc="upper right", fontsize=11, frameon=True)
+        ax_bars.grid(axis="y", linestyle=":", alpha=0.6, zorder=0)
+        ax_bars.set_axisbelow(True)
+
+        for ax, (name, details, _) in zip(cm_axes, series):
+            tp = int(details["tp"])
+            fn = int(details["fn"])
+            fp = int(details["fp"])
+            tn = int(details["tn"])
+            correct = int(details["correct"])
+            ax.axis("off")
+            ax.set_title(
+                f"{name}\nAccuracy {details['accuracy']:.1f}%     {correct}/{total} correct",
+                fontsize=13,
+                fontweight="bold",
+                pad=8,
+            )
+            cell_text = [
+                ["", "Predicted\nSupported", "Predicted\nNot supported"],
+                ["Actual\nSupported", f"{tp}\n{tp / total * 100:.1f}%", f"{fn}\n{fn / total * 100:.1f}%"],
+                ["Actual\nNot supported", f"{fp}\n{fp / total * 100:.1f}%", f"{tn}\n{tn / total * 100:.1f}%"],
+            ]
+            table = ax.table(cellText=cell_text, loc="center", cellLoc="center", bbox=[0.0, 0.02, 1.0, 0.84])
+            table.auto_set_font_size(False)
+            table.set_fontsize(11)
+            colors_cm = {
+                (0, 0): "#1c2833", (0, 1): "#1c2833", (0, 2): "#1c2833",
+                (1, 0): "#1c2833", (2, 0): "#1c2833",
+                (1, 1): "#196f3d", (1, 2): "#c0392b",
+                (2, 1): "#d35400", (2, 2): "#1a5276",
+            }
+            for (row_idx, col_idx), cell in table.get_celld().items():
+                cell.set_facecolor(colors_cm[(row_idx, col_idx)])
+                cell.set_edgecolor("white")
+                cell.set_linewidth(1.4)
+                cell.set_text_props(color="white", fontweight="bold", fontsize=11)
+
+        fig.text(
+            0.5,
+            0.02,
+            "Precision, recall, and F1 are for Supported claims.  "
+            "Green and blue cells are correct. Red is a missed supported claim. Orange is a false alarm.",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="#1c2833",
+        )
+        comparison_path = os.path.join(output_dir, "overlap_aggregation_comparison.png")
+        fig.savefig(comparison_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  [OK] Overlap aggregation comparison saved to: {comparison_path}")
+        for name, details, _ in series:
+            print(
+                f"  {name:<16} accuracy {details['accuracy']:.2f}%  "
+                f"{details['correct']}/{details['total']} correct  "
+                f"precision {details['precision_s']:.1f}%  "
+                f"recall {details['recall_s']:.1f}%  "
+                f"F1 {details['f1_s']:.1f}%"
+            )
+
+    def plot_final_results(self, output_dir: str = "eda_plots", threshold: float = 0.60):
+        """
+        Saves two figures: lexical overlap and entailment.
+        Each figure shows accuracy, precision, recall, and F1 as bars, plus one confusion matrix.
+
+        :param output_dir: Directory where the figures are saved.
+        :param threshold: Decision cutoff for lexical overlap recall.
+        """
+        acc_data = self.compute_preprocessing_accuracies(threshold=threshold)
+        os.makedirs(output_dir, exist_ok=True)
+        n_total = acc_data["total_examples"]
+
+        def as_percent(value):
+            return value * 100.0 if value <= 1.0 else value
+
+        def draw_result(path, title, subtitle, details):
+            tp = int(details["tp"])
+            fn = int(details["fn"])
+            fp = int(details["fp"])
+            tn = int(details["tn"])
+            total = int(details.get("total", n_total))
+            correct = int(details.get("correct", tp + tn))
+            metric_values = [
+                ("Accuracy", as_percent(details["accuracy"]), "#2c3e50"),
+                ("Precision", as_percent(details.get("precision_s", 0.0)), "#1abc9c"),
+                ("Recall", as_percent(details.get("recall_s", 0.0)), "#2980b9"),
+                ("F1", as_percent(details.get("f1_s", 0.0)), "#8e44ad"),
+            ]
+
+            fig, (ax_bars, ax_cm) = plt.subplots(1, 2, figsize=(13.2, 6.2))
+            fig.suptitle(title, fontsize=16, fontweight="bold", y=0.98)
+            fig.text(0.5, 0.91, subtitle, ha="center", va="center", fontsize=11, color="#34495e")
+            fig.subplots_adjust(top=0.80, bottom=0.14, wspace=0.22, left=0.07, right=0.98)
+
+            names = [name for name, _, _ in metric_values]
+            values = [value for _, value, _ in metric_values]
+            colors = [color for _, _, color in metric_values]
+            bars = ax_bars.bar(names, values, color=colors, edgecolor="black", width=0.68, zorder=2)
+            for bar, value in zip(bars, values):
+                ax_bars.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    value + 1.5,
+                    f"{value:.1f}%",
+                    ha="center",
+                    va="bottom",
+                    fontsize=12,
+                    fontweight="bold",
+                    color="#1c2833",
+                )
+            ax_bars.set_ylim(0, 100)
+            ax_bars.set_ylabel("Score (%)", fontsize=12, fontweight="bold")
+            ax_bars.set_title(
+                f"Accuracy {values[0]:.1f}%     {correct}/{total} correct",
+                fontsize=13,
+                fontweight="bold",
+            )
+            ax_bars.tick_params(axis="x", labelsize=12)
+            for label in ax_bars.get_xticklabels():
+                label.set_fontweight("bold")
+            ax_bars.grid(axis="y", linestyle=":", alpha=0.6, zorder=0)
+            ax_bars.set_axisbelow(True)
+
+            ax_cm.axis("off")
+            ax_cm.set_title("Confusion matrix", fontsize=13, fontweight="bold", pad=12)
+            cell_text = [
+                ["", "Predicted\nSupported", "Predicted\nNot supported"],
+                ["Actual\nSupported", f"{tp}\n{tp / total * 100:.1f}%", f"{fn}\n{fn / total * 100:.1f}%"],
+                ["Actual\nNot supported", f"{fp}\n{fp / total * 100:.1f}%", f"{tn}\n{tn / total * 100:.1f}%"],
+            ]
+            table = ax_cm.table(
+                cellText=cell_text,
+                loc="center",
+                cellLoc="center",
+                bbox=[0.02, 0.08, 0.96, 0.82],
+            )
+            table.auto_set_font_size(False)
+            table.set_fontsize(12)
+            colors_cm = {
+                (0, 0): "#1c2833",
+                (0, 1): "#1c2833",
+                (0, 2): "#1c2833",
+                (1, 0): "#1c2833",
+                (2, 0): "#1c2833",
+                (1, 1): "#196f3d",
+                (1, 2): "#c0392b",
+                (2, 1): "#d35400",
+                (2, 2): "#1a5276",
+            }
+            for (row_idx, col_idx), cell in table.get_celld().items():
+                cell.set_facecolor(colors_cm[(row_idx, col_idx)])
+                cell.set_edgecolor("white")
+                cell.set_linewidth(1.4)
+                cell.set_text_props(color="white", fontweight="bold", fontsize=12)
+
+            fig.text(
+                0.5,
+                0.03,
+                "Precision, recall, and F1 are for Supported claims.  "
+                "Green and blue cells are correct. Red is a missed supported claim. Orange is a false alarm.",
+                ha="center",
+                va="center",
+                fontsize=10,
+                color="#1c2833",
+            )
+            fig.savefig(path, dpi=200, bbox_inches="tight")
+            plt.close(fig)
+            print(f"  [OK] Final results plot saved to: {path}")
+
+        draw_result(
+            os.path.join(output_dir, "lexical_overlap_results.png"),
+            "Lexical overlap results",
+            f"Recall score, cutoff {threshold:.2f}, best passage kept.  {n_total} claims.",
+            acc_data["word_overlap"]["stem_details"],
+        )
+        draw_result(
+            os.path.join(output_dir, "entailment_results.png"),
+            "Entailment results",
+            f"DeBERTa cross-encoder.  {n_total} claims.",
+            acc_data["entailment"]["stem_details"],
+        )
+
+    def plot_entailment_strategy_comparison(
+        self,
+        output_dir: str = "eda_plots",
+        threshold: float = 0.50,
+    ):
+        """
+        Compares discrete entailment with threshold entailment on one figure.
+        The figure has grouped bars for accuracy, precision, recall, and F1,
+        plus a confusion matrix for each decision rule.
+
+        :param output_dir: Directory where the figure is saved.
+        :param threshold: Probability cutoff used by the threshold strategy.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        metrics_path = os.path.join(output_dir, "entailment_strategy_metrics.json")
+        if os.path.exists(metrics_path):
+            with open(metrics_path, "r", encoding="utf-8") as handle:
+                metrics = json.load(handle)
+        else:
+            metrics = self._score_entailment_strategies(threshold=threshold)
+            with open(metrics_path, "w", encoding="utf-8") as handle:
+                json.dump(metrics, handle, indent=2)
+
+        def as_percent(value):
+            return value * 100.0 if value <= 1.0 else value
+
+        series = [
+            ("Threshold", metrics["threshold"], "#2c3e50"),
+            ("Discrete", metrics["discrete"], "#16a085"),
+        ]
+        metric_keys = [
+            ("accuracy", "Accuracy"),
+            ("precision_s", "Precision"),
+            ("recall_s", "Recall"),
+            ("f1_s", "F1"),
+        ]
+        total = int(metrics["threshold"]["total"])
+
+        fig = plt.figure(figsize=(13.4, 10.2))
+        fig.suptitle(
+            "Entailment: threshold decision vs discrete decision",
+            fontsize=16,
+            fontweight="bold",
+            y=0.98,
+        )
+        fig.text(
+            0.5,
+            0.935,
+            f"DeBERTa on {total} claims.  Threshold calls Supported when entailment probability is at least {threshold:.2f}.  "
+            "Discrete calls Supported when entailment beats neutral and contradiction.",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="#34495e",
+        )
+        gs = fig.add_gridspec(2, 2, height_ratios=[1.05, 1.0], hspace=0.38, wspace=0.16, left=0.07, right=0.98, top=0.86, bottom=0.08)
+        ax_bars = fig.add_subplot(gs[0, :])
+        cm_axes = [fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1])]
+
+        x = np.arange(len(metric_keys))
+        width = 0.34
+        for i, (name, details, color) in enumerate(series):
+            vals = [as_percent(details[key]) for key, _ in metric_keys]
+            offset = (i - 0.5) * width
+            bars = ax_bars.bar(x + offset, vals, width=width, color=color, edgecolor="black", label=name, zorder=2)
+            for bar, value in zip(bars, vals):
+                ax_bars.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    value - 3.5,
+                    f"{value:.1f}",
+                    ha="center",
+                    va="top",
+                    color="white",
+                    fontsize=11,
+                    fontweight="bold",
+                    zorder=3,
+                )
+        ax_bars.set_xticks(x)
+        ax_bars.set_xticklabels([label for _, label in metric_keys], fontsize=12, fontweight="bold")
+        ax_bars.set_ylim(0, 100)
+        ax_bars.set_ylabel("Score (%)", fontsize=12, fontweight="bold")
+        ax_bars.set_title("Accuracy, precision, recall, and F1", fontsize=13, fontweight="bold")
+        ax_bars.legend(loc="upper right", fontsize=11, frameon=True)
+        ax_bars.grid(axis="y", linestyle=":", alpha=0.6, zorder=0)
+        ax_bars.set_axisbelow(True)
+
+        for ax, (name, details, _) in zip(cm_axes, series):
+            tp = int(details["tp"])
+            fn = int(details["fn"])
+            fp = int(details["fp"])
+            tn = int(details["tn"])
+            correct = int(details["correct"])
+            accuracy = as_percent(details["accuracy"])
+            ax.axis("off")
+            ax.set_title(
+                f"{name}\nAccuracy {accuracy:.1f}%     {correct}/{total} correct",
+                fontsize=13,
+                fontweight="bold",
+                pad=8,
+            )
+            cell_text = [
+                ["", "Predicted\nSupported", "Predicted\nNot supported"],
+                ["Actual\nSupported", f"{tp}\n{tp / total * 100:.1f}%", f"{fn}\n{fn / total * 100:.1f}%"],
+                ["Actual\nNot supported", f"{fp}\n{fp / total * 100:.1f}%", f"{tn}\n{tn / total * 100:.1f}%"],
+            ]
+            table = ax.table(cellText=cell_text, loc="center", cellLoc="center", bbox=[0.0, 0.02, 1.0, 0.84])
+            table.auto_set_font_size(False)
+            table.set_fontsize(11)
+            colors_cm = {
+                (0, 0): "#1c2833", (0, 1): "#1c2833", (0, 2): "#1c2833",
+                (1, 0): "#1c2833", (2, 0): "#1c2833",
+                (1, 1): "#196f3d", (1, 2): "#c0392b",
+                (2, 1): "#d35400", (2, 2): "#1a5276",
+            }
+            for (row_idx, col_idx), cell in table.get_celld().items():
+                cell.set_facecolor(colors_cm[(row_idx, col_idx)])
+                cell.set_edgecolor("white")
+                cell.set_linewidth(1.4)
+                cell.set_text_props(color="white", fontweight="bold", fontsize=11)
+
+        fig.text(
+            0.5,
+            0.02,
+            "Precision, recall, and F1 are for Supported claims.  "
+            "Green and blue cells are correct. Red is a missed supported claim. Orange is a false alarm.",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="#1c2833",
+        )
+        comparison_path = os.path.join(output_dir, "entailment_strategy_comparison.png")
+        fig.savefig(comparison_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  [OK] Entailment strategy comparison saved to: {comparison_path}")
+
+    def _score_entailment_strategies(self, threshold: float = 0.50) -> dict:
+        """
+        Runs DeBERTa once per candidate premise and applies both entailment decision rules.
+        Threshold: Supported when the best entailment probability is at least the cutoff,
+        and that probability is higher than contradiction.
+        Discrete: Supported when entailment is the largest of the three class probabilities.
+        """
+        import torch
+        import torch.nn.functional as F
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        from factcheck import EntailmentFactChecker
+
+        passages_dict = read_passages(self.passages_path)
+        examples = read_fact_examples(self.dev_path, passages_dict)
+        checker = EntailmentFactChecker(ent_model=None, strategy="threshold", threshold=threshold)
+
+        pairs = []
+        for ex_idx, ex in enumerate(examples):
+            for premise in checker._extract_candidates(ex.fact, ex.passages):
+                pairs.append((ex_idx, premise, ex.fact))
+
+        model_name = "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        model.eval()
+
+        probs_by_example = {i: [] for i in range(len(examples))}
+        batch_size = 8
+        print(f"Scoring {len(pairs)} entailment premises for {len(examples)} claims...")
+        with torch.inference_mode():
+            for start in range(0, len(pairs), batch_size):
+                batch = pairs[start:start + batch_size]
+                inputs = tokenizer(
+                    [item[1] for item in batch],
+                    [item[2] for item in batch],
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=256,
+                    padding=True,
+                )
+                logits = model(**inputs).logits
+                probs = F.softmax(logits, dim=-1)
+                for item, row in zip(batch, probs):
+                    probs_by_example[item[0]].append((row[0].item(), row[1].item(), row[2].item()))
+                if start % 80 == 0:
+                    print(f"  scored {min(start + batch_size, len(pairs))}/{len(pairs)} premises")
+
+        def decide(rows):
+            max_entailment = 0.0
+            discrete_supported = False
+            for p_ent, p_neu, p_con in rows:
+                if p_ent > p_con and p_ent > max_entailment:
+                    max_entailment = p_ent
+                if p_ent > p_neu and p_ent > p_con:
+                    discrete_supported = True
+            threshold_label = "S" if max_entailment >= threshold else "NS"
+            discrete_label = "S" if discrete_supported else "NS"
+            return threshold_label, discrete_label
+
+        predictions = {"threshold": [], "discrete": []}
+        labels = []
+        for ex_idx, ex in enumerate(examples):
+            gold = "NS" if ex.label == "IR" else ex.label
+            threshold_label, discrete_label = decide(probs_by_example[ex_idx])
+            predictions["threshold"].append(threshold_label)
+            predictions["discrete"].append(discrete_label)
+            labels.append(gold)
+
+        def summarize(preds):
+            tp = sum(pred == "S" and gold == "S" for pred, gold in zip(preds, labels))
+            fn = sum(pred == "NS" and gold == "S" for pred, gold in zip(preds, labels))
+            fp = sum(pred == "S" and gold == "NS" for pred, gold in zip(preds, labels))
+            tn = sum(pred == "NS" and gold == "NS" for pred, gold in zip(preds, labels))
+            total = len(labels)
+            correct = tp + tn
+            accuracy = correct / total * 100.0 if total else 0.0
+            precision_s = tp / (tp + fp) if (tp + fp) else 0.0
+            recall_s = tp / (tp + fn) if (tp + fn) else 0.0
+            f1_s = 2 * precision_s * recall_s / (precision_s + recall_s) if (precision_s + recall_s) else 0.0
+            precision_ns = tn / (tn + fn) if (tn + fn) else 0.0
+            recall_ns = tn / (tn + fp) if (tn + fp) else 0.0
+            f1_ns = 2 * precision_ns * recall_ns / (precision_ns + recall_ns) if (precision_ns + recall_ns) else 0.0
+            return {
+                "accuracy": accuracy,
+                "correct": correct,
+                "total": total,
+                "tp": tp,
+                "fn": fn,
+                "fp": fp,
+                "tn": tn,
+                "precision_s": precision_s,
+                "recall_s": recall_s,
+                "f1_s": f1_s,
+                "precision_ns": precision_ns,
+                "recall_ns": recall_ns,
+                "f1_ns": f1_ns,
+                "macro_f1": (f1_s + f1_ns) / 2.0,
+            }
+
+        return {
+            "threshold": summarize(predictions["threshold"]),
+            "discrete": summarize(predictions["discrete"]),
+        }
 
     def run_cross_validation(self, k: int = 5, seed: int = 42):
         """
