@@ -7,37 +7,40 @@ passages_dict = read_passages("data/passages_bm25_ChatGPT_humfacts.jsonl")
 examples = read_fact_examples("data/dev_labeled_ChatGPT.jsonl", passages_dict)
 
 checker = WordRecallThresholdFactChecker()
+methods = [
+    ("Recall", checker._recall),
+    ("F1", checker._f1),
+    ("Jaccard", checker._jaccard),
+    ("Cosine", checker._cosine),
+]
 
-#  Pre-calculate overlap scores for all examples (to make the sweep fast)
-scores = []
+# One overlap score per claim: the best passage, for every scoring method.
+score_lists = {name: [] for name, _ in methods}
 labels = []
 for ex in examples:
     fact_tokens = checker._preprocess(ex.fact)
-    best_score = max(
-        (
-            checker._recall(fact_tokens, checker._preprocess(p["text"]))
-            for p in ex.passages
-        ),
-        default=0.0,
-    )
-    scores.append(best_score)
+    passage_sets = [checker._preprocess(p["text"]) for p in ex.passages]
+    for name, score_fn in methods:
+        if not fact_tokens or not passage_sets:
+            best_score = 0.0
+        else:
+            best_score = max(score_fn(fact_tokens, tokens) for tokens in passage_sets)
+        score_lists[name].append(best_score)
     # Ground truth: 1 for 'S', 0 for 'NS' (and IR is treated as NS)
     labels.append(1 if ex.label == "S" else 0)
 
-# 3. Sweep thresholds from 0.10 to 0.90 in steps of 0.05
-best_threshold = 0.5
-best_accuracy = 0.0
 
-print(f"{'Threshold':<12} {'Accuracy':<10}")
-print("-" * 22)
-for t in np.arange(0.10, 0.95, 0.05):
-    preds = [1 if s >= t else 0 for s in scores]
-    acc = sum(p == l for p, l in zip(preds, labels)) / len(labels)
-    print(f"{t:<12.2f} {acc:<10.4f}")
-    if acc > best_accuracy:
-        best_accuracy = acc
-        best_threshold = t
-
-print(
-    f"\nOptimal Threshold: {best_threshold:.2f} with Accuracy: {best_accuracy * 100:.2f}%"
-)
+n = len(labels)
+print(f"{'Method':<12} {'Threshold':<12} {'Accuracy'}")
+print("-" * 36)
+for name, _ in methods:
+    scores = score_lists[name]
+    best_threshold = 0.0
+    best_accuracy = -1.0
+    for t in np.arange(0.01, 0.99, 0.01):
+        correct = sum((s > t) == lab for s, lab in zip(scores, labels))
+        acc = correct / n if n else 0.0
+        if acc > best_accuracy:
+            best_accuracy = acc
+            best_threshold = float(t)
+    print(f"{name:<12} {best_threshold:<12.2f} {best_accuracy * 100:.2f}%")
