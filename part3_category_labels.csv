@@ -1,0 +1,21 @@
+id,error_type,category,failure_mechanism
+124,FP,C2,Trivially true statement judged entailed by 'Ph.D. … from the Mayo Clinic'; gold NS is debatable.
+2,FP,C1,Premise is about Golden Globe nominations; singing is never mentioned (P_ent 0.71).
+0,FP,C1,No nationality stated; 'American' inferred from US TV credits (P_ent 0.63).
+40,FP,C1,Premise says the engraver Mariette recommended him; a property of another person is transferred to the subject.
+34,FP,C1,Vague 'various cultural initiatives' accepted from a list of publications.
+122,FP,C1,Vague 'various organizations' accepted from a lab role and one company role.
+5,FP,C2,"Supported by 'born in East Cleveland, Ohio'; gold IR is mapped to NS."
+51,FP,C1,Premise says Japan U-20 team; claim says Under-19.
+125,FP,C1,Education ('Ph.D. … from the Mayo Clinic') read as employment.
+168,FP,C1,Releasing an album read as being a songwriter.
+9,FN,C3,'Invented the first…' vs hedged 'disputed… first patented by Dr. Fisher in 1931'.
+207,FN,C3,'Numerous' needs counting across sentences; best premise shows only two appearances.
+161,FN,C2,Passages never state where Rio de Janeiro is; gold S relies on outside knowledge.
+8,FN,C3,'Best known for inventing' vs 'patented his metal detector' (patent is not invention).
+212,FN,C3,'Popular' needs the 'best known for' list; the model scored a premise about 'All In' (P_ent 0.35).
+220,FN,C3,'Best known for … Familiar Wife' not accepted as 'popular'.
+141,FN,C2,Gold 'July 18' vs passage '14 August 1987'; the model is right (P_con 0.999).
+189,FN,C2,No retrieved sentence mentions a divorce; pruned to zero candidates.
+144,FN,C4,Honours list (Russian Premier League/Cup) ties at overlap 0.33 and is cut by the cap of 15.
+214,FN,C3,'Best known for … New Heart (2007)' not accepted as 'popular'.

@@ -301,7 +301,7 @@ class WordRecallThresholdFactChecker(FactChecker):
         Initializes the Word Overlap Fact Checker baseline with configurable lexical preprocessing.
 
         :param threshold: Decision boundary threshold (predict 'S' if overlap score >= threshold, else 'NS').
-        :param metric: Scoring metric to use: 'recall', 'jaccard', or 'f1'.
+        :param metric: Scoring metric to use: 'recall', 'jaccard', 'f1', or 'cosine'.
         :param aggregation: Multi-passage aggregation strategy: 'max' (taking max score across
                             passages) or 'concat' (scoring against concatenated passages).
         :param use_stemmer: Whether to apply Porter stemming (stemming vs none ablation).
@@ -428,6 +428,23 @@ class WordRecallThresholdFactChecker(FactChecker):
         recall = len(intersection) / len(fact_tokens)
         return 2 * precision * recall / (precision + recall)
 
+    def _cosine(self, fact_tokens: set, passage_tokens: set) -> float:
+        """
+        Binary cosine similarity (Ochiai coefficient) over token sets:
+        |fact_tokens ∩ passage_tokens| / sqrt(|fact_tokens| * |passage_tokens|).
+
+        Unlike recall, both set sizes appear in the denominator, so a long passage
+        lowers the score even when the claim is fully covered.
+
+        :param fact_tokens: Set of preprocessed tokens representing the claim/fact.
+        :param passage_tokens: Set of preprocessed tokens representing the evidence passage.
+        :return: Cosine similarity as a float in [0.0, 1.0].
+        """
+        if not fact_tokens or not passage_tokens:
+            return 0.0
+        intersection = len(fact_tokens & passage_tokens)
+        return intersection / ((len(fact_tokens) * len(passage_tokens)) ** 0.5)
+
     def predict(self, fact: str, passages: List[dict]) -> str:
         """
         Predicts whether an atomic fact is supported ('S') or not supported ('NS') by retrieved passages.
@@ -449,6 +466,8 @@ class WordRecallThresholdFactChecker(FactChecker):
             score_fn = self._jaccard
         elif self.metric == "f1":
             score_fn = self._f1
+        elif self.metric == "cosine":
+            score_fn = self._cosine
         else:
             score_fn = self._recall
 
@@ -490,7 +509,7 @@ class WordRecallThresholdFactChecker(FactChecker):
         :param examples: List of FactExample objects (or dicts with 'fact'/'text', 'passages', 'label').
         :param k: Number of cross-validation folds (default: 5).
         :param seed: Random seed for fold partitioning.
-        :param metric: Scoring metric ('recall', 'jaccard', or 'f1').
+        :param metric: Scoring metric ('recall', 'jaccard', 'f1', or 'cosine').
         :param aggregation: Passage aggregation ('max' or 'concat').
         :param verbose: Whether to print the formatted fold evaluation table.
         :return: Dict containing fold metrics, mean validation accuracy, and mean optimal threshold.
@@ -621,7 +640,7 @@ class EntailmentFactChecker(FactChecker):
         ent_model,
         strategy: str = "threshold",
         threshold: float = 0.50,
-        prune_threshold: float = 0.20,
+        prune_threshold: float = 0.2,
         use_pruning: bool = True,
         sentence_level: bool = True,
         max_candidates: int = 15,
