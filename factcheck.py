@@ -461,7 +461,7 @@ class WordRecallThresholdFactChecker(FactChecker):
         """
         Initializes the Word Overlap Fact Checker baseline with configurable lexical preprocessing.
 
-        :param threshold: Decision boundary threshold (predict 'S' if overlap score >= threshold, else 'NS').
+        :param threshold: Decision boundary threshold (predict 'S' if overlap score > threshold, else 'NS').
         :param metric: Scoring metric to use: 'recall', 'jaccard', 'f1', or 'cosine'.
         :param aggregation: Multi-passage aggregation strategy: 'max' (taking max score across
                             passages) or 'concat' (scoring against concatenated passages).
@@ -690,10 +690,10 @@ class EntailmentFactChecker(FactChecker):
         :param ent_model: DeBERTa/RoBERTa entailment model wrapper (instance of EntailmentModel).
         :param strategy: Decision rule ('threshold' for continuous probability thresholding, or 'discrete' for 3-class argmax).
         :param threshold: Continuous probability decision boundary (predict 'S' if max P(entailment) >= threshold).
-        :param prune_threshold: Minimum lexical overlap score required to retain a candidate premise sentence (default: 0.10).
+        red to retain a candidate premise sentence .
         :param use_pruning: Whether to filter out low-overlap candidate sentences prior to transformer NLI inference.
         :param sentence_level: If True, evaluates passage sentences individually with pronoun resolution and sliding windows; if False, evaluates full passages.
-        :param max_candidates: Maximum number of top-ranked candidate premises to evaluate with NLI per claim (default: 6).
+        :param max_candidates: Maximum number of top-ranked candidate premises to evaluate with NLI per claim .
         :param use_hardcoded_threshold: True keeps the fixed threshold. False tunes it with cross-validation.
         """
         self.ent_model = ent_model
