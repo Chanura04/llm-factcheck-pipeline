@@ -1,0 +1,4 @@
+fact	gold	stem_pred	lem_pred	stem_score	lem_score
+Gerhard Fischer is best known for inventing a metal detector.	S	S	NS	0.7143	0.5714
+Rennie Fritchie is a crossbench member of the House of Lords.	S	S	NS	0.6667	0.5
+Don Featherstone was a designer.	S	S	NS	1.0	0.5
